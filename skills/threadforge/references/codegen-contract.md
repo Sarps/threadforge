@@ -25,24 +25,24 @@ interpolation:
 
 ```js
 export const meta = {
-  name: 'verify-jira-stories',          // = thread meta.name = filename
-  description: '...',                    // = thread meta.description
-  whenToUse: '...',                      // from the thread, if present
-  phases: [{ title: 'Discover' }, { title: 'Verify' }],  // if phase() is used, titles match exactly
+    name: 'verify-jira-stories',          // = thread meta.name = filename
+    description: '...',                    // = thread meta.description
+    whenToUse: '...',                      // from the thread, if present
+    phases: [{title: 'Discover'}, {title: 'Verify'}],  // if phase() is used, titles match exactly
 }
 ```
 
 ## C3. Activity → primitive mapping
 
-| Thread activity | Compiles to |
-| --- | --- |
-| `agent` | `agent(prompt, opts)` |
-| `sequence` | sequential `await`s, or `pipeline()` stages when the sequence is a fanout body |
-| `parallel` | `parallel([...])` — only because the thread declared a barrier |
-| `fanout` mode `orchestrate` | `pipeline(list, item => ...)`, nesting as the body nests |
-| `fanout` mode `compare` | `parallel(Array.from({length: N}, ...))` + the downstream judge |
-| `loop` | a bounded `while` honoring `stopCondition`, `noProgressCondition`, `maxRounds` |
-| `call` | `workflow('<workflowName>', args)` (nesting is one level — a called workflow must not itself `call`) |
+| Thread activity             | Compiles to                                                                                          |
+|-----------------------------|------------------------------------------------------------------------------------------------------|
+| `agent`                     | `agent(prompt, opts)`                                                                                |
+| `sequence`                  | sequential `await`s, or `pipeline()` stages when the sequence is a fanout body                       |
+| `parallel`                  | `parallel([...])` — only because the thread declared a barrier                                       |
+| `fanout` mode `orchestrate` | `pipeline(list, item => ...)`, nesting as the body nests                                             |
+| `fanout` mode `compare`     | `parallel(Array.from({length: N}, ...))` + the downstream judge                                      |
+| `loop`                      | a bounded `while` honoring `stopCondition`, `noProgressCondition`, `maxRounds`                       |
+| `call`                      | `workflow('<workflowName>', args)` (nesting is one level — a called workflow must not itself `call`) |
 
 Rules:
 

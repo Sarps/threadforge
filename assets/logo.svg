@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 560" width="1024" height="1120">
+  <defs>
+    <linearGradient id="ember" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f59e0b"/>
+      <stop offset="1" stop-color="#dc2626"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="560" fill="#ffffff"/>
+
+  <!-- ============ thread topology: begin -> fan-out of 3 gears -> end ============ -->
+  <g stroke="#1f2937" stroke-width="7" fill="none" stroke-linecap="round">
+    <!-- begin diamond (open: the human provides) -->
+    <path d="M256,34 L272,50 L256,66 L240,50 Z" stroke-width="6"/>
+    <!-- stem -->
+    <path d="M256,66 L256,88"/>
+    <!-- fan out -->
+    <path d="M256,88 C256,118 176,120 176,150"/>
+    <path d="M256,88 L256,150"/>
+    <path d="M256,88 C256,118 336,120 336,150"/>
+    <!-- converge -->
+    <path d="M176,186 C176,216 256,214 256,238"/>
+    <path d="M256,186 L256,238"/>
+    <path d="M336,186 C336,216 256,214 256,238"/>
+  </g>
+
+  <!-- gear nodes (the agents) -->
+  <g fill="url(#ember)">
+    <g transform="translate(176,168)">
+      <g id="teeth">
+        <rect x="-3.5" y="-21" width="7" height="10" rx="2"/>
+        <rect x="-3.5" y="-21" width="7" height="10" rx="2" transform="rotate(45)"/>
+        <rect x="-3.5" y="-21" width="7" height="10" rx="2" transform="rotate(90)"/>
+        <rect x="-3.5" y="-21" width="7" height="10" rx="2" transform="rotate(135)"/>
+        <rect x="-3.5" y="-21" width="7" height="10" rx="2" transform="rotate(180)"/>
+        <rect x="-3.5" y="-21" width="7" height="10" rx="2" transform="rotate(225)"/>
+        <rect x="-3.5" y="-21" width="7" height="10" rx="2" transform="rotate(270)"/>
+        <rect x="-3.5" y="-21" width="7" height="10" rx="2" transform="rotate(315)"/>
+      </g>
+      <circle r="14"/>
+      <circle r="5.5" fill="#ffffff"/>
+    </g>
+    <g transform="translate(256,168)">
+      <use href="#teeth"/>
+      <circle r="14"/>
+      <circle r="5.5" fill="#ffffff"/>
+    </g>
+    <g transform="translate(336,168)">
+      <use href="#teeth"/>
+      <circle r="14"/>
+      <circle r="5.5" fill="#ffffff"/>
+    </g>
+  </g>
+
+  <!-- end diamond (filled: the validated result) -->
+  <path d="M256,236 L276,256 L256,276 L236,256 Z" fill="#1f2937"/>
+  <!-- thread meets the anvil -->
+  <path d="M256,276 L256,296" stroke="#1f2937" stroke-width="7" stroke-linecap="round"/>
+
+  <!-- ============ sparks at the strike point ============ -->
+  <g stroke="url(#ember)" stroke-width="5" stroke-linecap="round" fill="none">
+    <path d="M232,288 L214,272"/>
+    <path d="M280,288 L298,272"/>
+    <path d="M222,296 L200,292"/>
+    <path d="M290,296 L312,292"/>
+  </g>
+  <g fill="#f59e0b">
+    <path d="M196,266 l3.5,8 8,3.5 -8,3.5 -3.5,8 -3.5,-8 -8,-3.5 8,-3.5 Z"/>
+    <path d="M318,262 l3,7 7,3 -7,3 -3,7 -3,-7 -7,-3 7,-3 Z"/>
+  </g>
+
+  <!-- ============ anvil ============ -->
+  <path fill="#1f2937" d="
+    M48,314
+    C90,300 124,298 150,298
+    L410,298
+    L410,342
+    L338,342
+    L338,358
+    C338,374 356,382 370,388
+    L370,404
+    L142,404
+    L142,388
+    C156,382 174,374 174,358
+    L174,342
+    L150,342
+    C118,342 76,330 48,314
+    Z"/>
+  <path fill="#1f2937" d="M124,414 L388,414 L388,440 L124,440 Z"/>
+  <!-- hardy hole on the face -->
+  <rect x="362" y="310" width="20" height="20" fill="#ffffff"/>
+
+  <!-- ============ wordmark ============ -->
+  <text x="256" y="496" text-anchor="middle"
+        font-family="Avenir Next, Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="800" font-size="42" letter-spacing="5" fill="#1f2937">THREADFORGE</text>
+  <text x="256" y="528" text-anchor="middle"
+        font-family="Avenir Next, Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="500" font-size="15" letter-spacing="3" fill="#6b7280">DRAW THE THREAD · FORGE THE WORKFLOW</text>
+</svg>

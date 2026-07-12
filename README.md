@@ -1,5 +1,7 @@
 # ThreadForge
 
+<p align="center"><img src="assets/logo.svg" alt="ThreadForge — draw the thread, forge the workflow" width="360"></p>
+
 **Draw the topology of engineering work as a thread. Let your agent write the workflow code.**
 
 ThreadForge is an [agent skill](https://agentskills.io) that turns a prose request like *"verify
