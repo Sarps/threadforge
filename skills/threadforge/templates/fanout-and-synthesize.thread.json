@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-fanout-and-synthesize",
+    "description": "TEMPLATE (pattern, B + barrier): break a question into aspects, research each in parallel, synthesize one answer. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "Research or analysis too broad for one agent's context — decompose, cover, then merge"
+  },
+  "begin": {
+    "args": { "question": "string (required) — <the thing to understand>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "agent",
+        "does": "decompose {question} into <4-8> independent aspects worth investigating separately",
+        "produces": "aspects"
+      },
+      {
+        "kind": "fanout",
+        "mode": "orchestrate",
+        "over": "aspects",
+        "as": "aspect",
+        "body": {
+          "kind": "agent",
+          "does": "investigate {aspect} in depth: <where to look, what evidence counts>",
+          "produces": "notes"
+        }
+      },
+      {
+        "kind": "agent",
+        "does": "synthesize {notes} into one answer to {question}; flag contradictions between aspects and anything no aspect covered",
+        "produces": "synthesis"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. one coherent answer with per-aspect evidence; contradictions surfaced, not averaged away>"
+  }
+}

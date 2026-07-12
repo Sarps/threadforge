@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-adversarial-verification",
+    "description": "TEMPLATE (pattern, B + F): produce findings, then per finding fan out independent skeptics who try to REFUTE it; keep only survivors. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "Any review/audit where plausible-but-wrong findings are costly — bug hunts, security reviews, claim checking"
+  },
+  "begin": {
+    "args": { "scope": "string (required) — <what to review, e.g. a diff, directory, or document>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "agent",
+        "does": "review {scope} and report every <bug/issue/claim> found, each with concrete evidence",
+        "produces": "findings"
+      },
+      {
+        "kind": "fanout",
+        "mode": "orchestrate",
+        "over": "findings",
+        "as": "finding",
+        "body": {
+          "kind": "fanout",
+          "mode": "compare",
+          "over": "finding",
+          "as": "skeptic",
+          "agents": 3,
+          "body": {
+            "kind": "agent",
+            "does": "adversarially try to refute {finding}; default to refuted if uncertain; report refuted/confirmed with reasoning",
+            "produces": "verdicts"
+          }
+        }
+      },
+      {
+        "kind": "agent",
+        "does": "keep only entries of {findings} that a majority of {verdicts} confirmed; list the killed ones with the refutation that killed them",
+        "produces": "confirmedFindings"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. every surviving finding is real and reproducible; the kill list looks reasonable>"
+  }
+}

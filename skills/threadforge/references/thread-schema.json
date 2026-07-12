@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threadforge.dev/schemas/thread-v1.json",
+  "title": "ThreadForge Thread",
+  "description": "A thread: the topology of a piece of engineering work, bounded by a human begin node and a human end node. One thread generates one Claude workflow script.",
+  "type": "object",
+  "required": ["schemaVersion", "meta", "root", "end"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "meta": {
+      "type": "object",
+      "required": ["name", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "description": "kebab-case; becomes the workflow filename <name>.js"
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "whenToUse": { "type": "string" }
+      }
+    },
+    "begin": {
+      "type": "object",
+      "description": "Human start node: the engineer provides the inputs.",
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "type": "object",
+          "description": "Arg sketch: name -> rough type/requirement prose, e.g. { \"boardId\": \"string (required)\" }. Not a strict schema; guides the codegen agent's args reads.",
+          "additionalProperties": { "type": "string" }
+        },
+        "intent": {
+          "type": "string",
+          "description": "One-line statement of why this thread is being run."
+        }
+      }
+    },
+    "root": { "$ref": "#/$defs/activity" },
+    "end": {
+      "type": "object",
+      "description": "Human end node: what the engineer reviews to call this done.",
+      "required": ["review"],
+      "additionalProperties": false,
+      "properties": {
+        "review": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What 'validated/done' means; guides the workflow's return shape."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "activity": {
+      "oneOf": [
+        { "$ref": "#/$defs/agent" },
+        { "$ref": "#/$defs/sequence" },
+        { "$ref": "#/$defs/parallel" },
+        { "$ref": "#/$defs/fanout" },
+        { "$ref": "#/$defs/loop" },
+        { "$ref": "#/$defs/call" }
+      ]
+    },
+    "agent": {
+      "type": "object",
+      "description": "A single unit of agent work: an intent and an optional named output.",
+      "required": ["kind", "does"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "agent" },
+        "does": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Intent in prose. May reference args, upstream produces names, or fanout bindings as {name}."
+        },
+        "produces": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+          "description": "Names this activity's output so downstream activities can reference it."
+        },
+        "isolationHint": {
+          "type": "boolean",
+          "description": "Engineer's hint that this agent mutates files; the codegen agent decides whether worktree isolation is warranted."
+        }
+      }
+    },
+    "sequence": {
+      "type": "object",
+      "description": "C-thread: ordered steps with handoffs between them.",
+      "required": ["kind", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "sequence" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/activity" }
+        }
+      }
+    },
+    "parallel": {
+      "type": "object",
+      "description": "P-thread: fixed branches at once, then a barrier. barrierReason is mandatory: if you cannot say why all results are needed together, you do not need a barrier.",
+      "required": ["kind", "branches", "barrierReason"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "parallel" },
+        "branches": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/activity" }
+        },
+        "barrierReason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why a later step needs ALL branch results at once."
+        }
+      }
+    },
+    "fanout": {
+      "type": "object",
+      "description": "B-thread (orchestrate: per-item work over a list) or F-thread (compare: N independent attempts at the same work, judged).",
+      "required": ["kind", "mode", "over", "as", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "fanout" },
+        "mode": { "enum": ["orchestrate", "compare"] },
+        "over": {
+          "type": "string",
+          "description": "Handoff name. orchestrate: the list to iterate. compare: the single input every attempt receives."
+        },
+        "as": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+          "description": "Item binding name available inside body, e.g. \"epic\"."
+        },
+        "agents": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "compare mode only: how many independent attempts to fan out."
+        },
+        "body": { "$ref": "#/$defs/activity" }
+      }
+    },
+    "loop": {
+      "type": "object",
+      "description": "A long-running thread that repeats until done. Both stop conditions are mandatory: an unbounded loop is a vague loop.",
+      "required": ["kind", "body", "stopCondition", "noProgressCondition"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "loop" },
+        "body": { "$ref": "#/$defs/activity" },
+        "stopCondition": {
+          "type": "string",
+          "minLength": 1,
+          "description": "When the loop is done (goal reached)."
+        },
+        "noProgressCondition": {
+          "type": "string",
+          "minLength": 1,
+          "description": "When to give up (no forward progress)."
+        },
+        "maxRounds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "call": {
+      "type": "object",
+      "description": "Thread composition: invoke another cataloged workflow. Compiles to workflow('<name>', args).",
+      "required": ["kind", "workflowName"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "call" },
+        "workflowName": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "description": "meta.name of a workflow in .claude/workflows/."
+        },
+        "args": {
+          "type": "object",
+          "description": "Arg mapping; values may reference in-scope names as {name}.",
+          "additionalProperties": { "type": "string" }
+        },
+        "produces": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+          "description": "Names the called workflow's return value for downstream handoffs."
+        }
+      }
+    }
+  }
+}

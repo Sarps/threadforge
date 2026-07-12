@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-generate-and-filter",
+    "description": "TEMPLATE (pattern): generate many candidates cheaply, score each independently, keep the best. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "When volume + a filter beats careful single-shot generation — names, test cases, hypotheses, ideas"
+  },
+  "begin": {
+    "args": { "brief": "string (required) — <what to generate and the constraints>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "agent",
+        "does": "generate <20+> diverse candidates for {brief}; favor variety over polish",
+        "produces": "candidates"
+      },
+      {
+        "kind": "fanout",
+        "mode": "orchestrate",
+        "over": "candidates",
+        "as": "candidate",
+        "body": {
+          "kind": "agent",
+          "does": "score {candidate} against {brief} on <the criteria that matter>; be harsh",
+          "produces": "scores"
+        }
+      },
+      {
+        "kind": "agent",
+        "does": "rank {candidates} by {scores} and keep the top <N> with a one-line case for each",
+        "produces": "shortlist"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. a shortlist of N, each with a score and rationale>"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-f-fanout-compare",
+    "description": "TEMPLATE (F — fan-out comparative): N independent attempts at the same work, then a judge picks/synthesizes the winner. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "Wide solution spaces where independent attempts beat one attempt iterated — designs, approaches, drafts"
+  },
+  "begin": {
+    "args": { "task": "string (required) — <the work every attempt takes on>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "agent",
+        "does": "frame {task} into a precise brief: <constraints, success criteria, what a good answer looks like>",
+        "produces": "brief"
+      },
+      {
+        "kind": "fanout",
+        "mode": "compare",
+        "over": "brief",
+        "as": "angle",
+        "agents": 3,
+        "body": {
+          "kind": "agent",
+          "does": "independently attempt {brief} from your own {angle} — <e.g. MVP-first / risk-first / user-first>",
+          "produces": "candidates"
+        }
+      },
+      {
+        "kind": "agent",
+        "does": "judge {candidates} against the {brief}: score each, pick the winner, graft in the best ideas from the runners-up",
+        "produces": "winner"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. the winning candidate plus the judge's scoring rationale>"
+  }
+}

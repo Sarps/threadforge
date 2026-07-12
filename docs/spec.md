@@ -1,4 +1,4 @@
-# Product Specification Document (v3)
+# Product Specification Document (v4)
 
 ## Product Name
 
@@ -6,725 +6,359 @@
 
 ## Feature Name
 
-**A Thread Topology Editor that Delegates Workflow Generation to an AI Agent**
+**A Distributable Agent Skill that Captures Thread Topology, Renders It, and Delegates Workflow
+Generation to the Agent**
 
-> **v3 note.** This supersedes v2. v2 still asked the tool to *be a compiler* — a deterministic
-> IR + plain-JS code generator that the engineer's outline drove directly. That was still the wrong
-> center of gravity: it forced ThreadForge to track the workflow runtime API forever, and it made the
-> engineer author at the level of `pipeline()` vs `parallel()`.
+> **v4 note.** This supersedes v3. v3 got the abstraction right — the engineer owns topology, the AI
+> owns mechanism — but wrapped it in a web application (Next.js, outline editor, Monaco, IndexedDB)
+> that added a browser round-trip to a terminal-native loop and delivered the least value per unit of
+> effort. v4 deletes the app. **ThreadForge is now an agent skill plus a file convention**,
+> distributed via the [`skills` CLI](https://www.npmjs.com/package/skills) so anyone can install it
+> into any project with one command. The four jobs the app was meant to do are done better without it:
 >
-> v3 removes the compiler entirely. **ThreadForge captures *intent* as a thread topology and hands
-> that thread to an AI agent, which writes the workflow `.js` using the dynamic-workflows skill.**
-> The engineer draws threads; the AI writes code. Neither the engineer nor the tool needs to know the
-> workflow API. The workflow-compatibility rules the codegen agent must enforce — formerly a separate
-> `addendum.md` — are now folded into this document as **[Appendix A](#appendix-a--codegen-agent-contract)**,
-> alongside the dynamic-workflows `SKILL.md` as the agent's reference material. This spec is
-> self-contained: there are no companion files.
+> | Job | v3 (app) | v4 (skill) |
+> | --- | --- | --- |
+> | guard against vague prompting | form fields | **elicitation protocol + deterministic validator that refuses codegen on errors** |
+> | see the workflow without reading JS | canvas/outline UI | **generated Mermaid diagram, a pure projection of the thread** |
+> | start from templates | seeded IndexedDB catalog | **template `.thread.json` files shipped inside the skill** |
+> | reuse workflows in others | in-app registry | **`call` activity + the `.claude/workflows/` directory as the registry** |
+>
+> The thread JSON model, the validation rules, and the codegen contract survive from v3 nearly
+> intact — they were always the product. Appendix A now ships as a file inside the skill
+> (`references/codegen-contract.md`) so it travels with every install.
 
 ---
 
 # 1. Product Summary
 
-ThreadForge is a **personal tool for drawing the topology of a piece of engineering work as a
-"thread"** — a tree of activities with clear human start and end points — and then having an **AI
-agent generate the runnable Claude workflow `.js`** from that thread.
+ThreadForge lets an engineer capture a piece of engineering work as a **thread** — a small JSON tree
+of activities with mandatory human begin and end nodes — and turns it into a runnable Claude
+dynamic-workflow script. The engineer never writes, reads, or maintains workflow JavaScript; their
+artifact is the thread, reviewed as a generated diagram.
 
-The engineer never writes the workflow script and never hand-stitches primitives. They express *what
-kind of work happens and how it is shaped* (sequential, parallel, fan-out, nested, looping); the AI
-fills in the mechanism (`agent()`, `pipeline()`, `parallel()`, `phase()`, schemas, prompts, args).
+It ships as a **skill repository**, installable into any project:
 
-```text
-Thread topology of intent   (drawn by the engineer)
-    ↓  serialized to text (JSON)
-AI codegen agent  +  dynamic-workflows SKILL.md  +  Appendix A rules
-    ↓  the agent writes the script
-Plain JavaScript Claude workflow script
-    ↓
-.claude/workflows/<name>.js
-    ↓
-Claude Code execution
+```bash
+npx skills add Sarps/threadforge        # installs into .claude/skills/ (and 60+ other agents)
 ```
 
-The dividing line is the whole idea:
+The loop, entirely inside the coding agent:
 
-| The engineer owns (strategy) | The AI agent owns (mechanism) |
-| ---------------------------- | ----------------------------- |
+```text
+"make me a workflow that ..."                        (engineer, in prose)
+    ↓  skill: pick nearest template, INTERVIEW until topology/handoffs/conditions are pinned
+threads/<name>.thread.json                           (source of truth, git-versioned)
+    ↓  skill: validate (deterministic script — errors block progress)
+    ↓  skill: render   (deterministic script — Mermaid diagram)
+threads/<name>.md                                    (the review surface — engineer approves HERE)
+    ↓  skill: codegen per the contract + the runtime's own dynamic-workflows docs
+.claude/workflows/<name>.js                          (regenerable artifact)
+    ↓
+Claude Code executes it
+```
+
+The dividing line is unchanged from v3 and is the whole idea:
+
+| The engineer owns (strategy) | The agent owns (mechanism) |
+| ---------------------------- | -------------------------- |
 | topology — sequence / parallel / fan-out / nesting / loop | `pipeline()` vs `parallel()` choice |
 | what each activity is *for* (intent, in prose) | the exact prompt wording sent to each subagent |
-| named handoffs between activities ("this produces `epics`") | the JSON schemas that make those handoffs structured |
+| named handoffs ("this produces `epics`") | the JSON schemas that make handoffs structured |
 | where a human must start and validate | args reads, guards, `phase()`, `log()`, return shape |
 | which cataloged workflows to reuse | `workflow()` composition wiring |
-
-Because the tool emits a *thread*, not code, **the internals of the workflow runtime can evolve
-freely** — new primitives, renamed helpers, changed limits — without touching a single thread the
-engineer has drawn. The engineer's artifacts are threads; regenerating against an updated skill
-produces updated scripts.
 
 ---
 
 # 2. Problem Statement
 
-Dynamic workflows are powerful but they sit at the wrong altitude for a human to author directly:
+Four problems, in priority order:
 
-* Asking Claude to "build me a workflow" from prose is **non-deterministic at the level of intent** —
-  it guesses the topology, mis-nests fan-outs, and mis-wires which output feeds which step. A
-  validator can't fix this, because a perfectly valid script can still encode the *wrong intent*.
-* Hand-writing the script is deterministic but forces the engineer to **learn and track the workflow
-  API** (`pipeline` vs `parallel`, phase rules, schema plumbing, worktree isolation, budget loops) —
-  API surface that changes and that has nothing to do with the actual engineering intent.
+1. **Vague prompting.** "Build me a workflow" in free prose lets the agent guess the topology,
+   mis-nest fan-outs, and mis-wire which output feeds which step. The fix is not a form — it is a
+   contract that can *fail*: a thread schema whose required fields (fanout `over`, parallel
+   `barrierReason`, loop stop conditions, resolvable handoff names) are exactly the things vague
+   prompts leave unsaid, an interview protocol that extracts them, and a validator that blocks
+   codegen until they resolve.
+2. **Opacity of generated scripts.** The engineer should understand their workflow without reading
+   JavaScript. Fix: every thread renders to a Mermaid diagram by a *deterministic* script — a pure
+   projection that cannot drift from the thread, viewable on GitHub, in IDEs, anywhere.
+3. **Blank-canvas cost.** Most real workflows are instances of a dozen shapes. Fix: templates as
+   thread files shipped in the skill.
+4. **No reuse surface.** Workflows should compose. Fix: the `call` activity compiles to the
+   runtime's `workflow('<name>', args)`; the registry is the `.claude/workflows/` directory that
+   already exists, plus `threads/` for the intent behind each script.
 
-The insight: **the only thing that is genuinely the engineer's to specify is the topology of intent —
-the thread.** Everything below it (the mechanism) is either mechanical or soft prose the AI is good at.
-Per the dynamic-workflows guide, *"workflows operate as an orchestration layer beneath thread-based
-engineering"* — so the engineer should work at the thread layer and let an agent generate the layer
-beneath it.
-
-ThreadForge's one job:
-
-> Let the engineer capture the topology of intent as a thread — fast, structured, unambiguous — then
-> delegate script generation to an AI agent driven by the dynamic-workflows skill. The engineer never
-> writes, reads, or maintains workflow code.
-
-What the thread pins down (structure — the part free-prompting gets wrong):
-
-* **topology** — how activities sequence, fan out, nest, and loop
-* **handoffs** — which activity's named output feeds which downstream activity
-* **human boundaries** — the begin (prompt/plan) and end (review/validate) nodes of the thread
-
-What stays soft and is delegated to the AI (mechanism + behavioral prose):
-
-* the exact subagent **prompts**, the **schemas**, and every workflow **primitive** and API detail
+What the thread pins down (structure — what free-prompting gets wrong): topology, handoffs, human
+boundaries, stop conditions. What stays soft and is delegated (mechanism): prompts, schemas, every
+workflow primitive and API detail.
 
 ---
 
 # 3. Threads (the source model)
 
-From [thread-based engineering](https://claudefa.st/blog/guide/mechanics/thread-based-engineering):
-**a thread is a unit of engineering work over time, driven by you and your agent.** Every thread is bounded by two mandatory human nodes — a **begin** node (you provide a
-prompt or plan) and an **end** node (you review or validate) — with agent activity in between. Threads
-compose in four canonical shapes, and ThreadForge's activity palette is exactly these:
+From thread-based engineering (https://claudefa.st/blog/guide/mechanics/thread-based-engineering):
+a thread is a unit of engineering work over time, bounded by two mandatory human nodes — **begin**
+(the engineer provides intent and args) and **end** (the engineer reviews against stated criteria) —
+with agent activity in between. Threads compose in four canonical shapes; the activity palette is
+exactly these plus three structural helpers:
 
-| Thread type | Shape | ThreadForge activity | The AI typically compiles it to |
-| ----------- | ----- | -------------------- | ------------------------------- |
+| Thread type | Shape | Activity | Typically compiles to |
+| ----------- | ----- | -------- | --------------------- |
 | **C** — chained/sequential | phases in order, handoff between | `sequence` | sequential `await`s / `pipeline()` stages |
-| **P** — parallel | fixed branches at once, then a barrier | `parallel` | `parallel([...])` with a barrier reason |
-| **B** — nested/orchestrated | per-item work containing sub-threads | `fanout` (mode: `orchestrate`) | `pipeline(list, item => ...)` (possibly nested) |
-| **F** — fan-out comparative | same work across many agents, compared | `fanout` (mode: `compare`) | `parallel([...])` + judge/verify pattern |
-
-Plus two activities that aren't thread *types* but are needed to express real topologies:
-
-* `agent` — a single unit of agent work (a thread's atomic activity): an intent (`does`) and an
-  optional named output (`produces`).
-* `loop` — a long-running thread that repeats until done (the guide's "loop-until-done" generalizes a
-  long thread); carries a stop condition and a no-progress condition.
-* `call` — invoke another **cataloged** workflow as a sub-step (thread composition; the AI compiles it
-  to `workflow('<name>', args)`).
-
-The engineer assembles these into a tree. That tree, serialized to text, is the entire input to codegen.
+| **P** — parallel | fixed branches, then a barrier | `parallel` (requires `barrierReason`) | `parallel([...])` |
+| **B** — nested/orchestrated | per-item work over a list | `fanout` mode `orchestrate` | `pipeline(list, item => ...)` |
+| **F** — fan-out comparative | N attempts at the same work, judged | `fanout` mode `compare` (+ `agents`) | `parallel([...])` + judge |
+| — | atomic unit of agent work | `agent` (`does`, optional `produces`) | `agent()` |
+| — | repeat until done | `loop` (requires `stopCondition` + `noProgressCondition`) | bounded `while` |
+| — | invoke a cataloged workflow | `call` (`workflowName`) | `workflow('<name>', args)` |
 
 ---
 
-# 4. Motivating Example
+# 4. Data Model
 
-Verify that every story on a Jira board is actually implemented against its acceptance criteria.
-The engineer draws this **thread** — note it names no primitive and writes no code:
-
-```json
-{
-  "meta": {
-    "name": "verify-jira-stories",
-    "description": "Verify every story on a board is implemented per its acceptance criteria"
-  },
-  "begin": { "args": { "boardId": "string (required)" } },
-  "root": {
-    "kind": "sequence",                      // C-thread
-    "steps": [
-      { "kind": "agent",
-        "does": "fetch all epics on Jira board {boardId}",
-        "produces": "epics" },
-      { "kind": "fanout", "mode": "orchestrate",   // B-thread
-        "over": "epics", "as": "epic",
-        "body": { "kind": "agent",
-                  "does": "fetch all stories in epic {epic}",
-                  "produces": "stories" } },
-      { "kind": "fanout", "mode": "orchestrate",   // B-thread (nested)
-        "over": "stories", "as": "story",
-        "body": { "kind": "fanout", "mode": "compare",  // F-thread per epic
-                  "over": "story", "as": "s",
-                  "body": { "kind": "agent",
-                            "does": "check {s} acceptance criteria against the code",
-                            "produces": "verdict" } } }
-    ]
-  },
-  "end": { "review": "one verdict per story, grouped by epic" }
-}
-```
-
-The engineer hands this thread to the AI codegen agent. The agent — following the dynamic-workflows
-`SKILL.md` and [Appendix A](#appendix-a--codegen-agent-contract) — chooses the primitives, writes the prompts, infers the
-schemas, and produces a script like:
-
-```js
-export const meta = {
-  name: 'verify-jira-stories',
-  description: 'Verify every story on a board is implemented per its acceptance criteria',
-  phases: ['discover', 'qa'],
-}
-
-const boardId = args?.boardId
-if (!boardId) throw new Error('boardId required')
-
-phase('discover')
-const epics = await agent(`Fetch all epics on Jira board ${boardId}.`, { schema: EPICS })
-
-const withStories = await pipeline(epics.epics, epic =>
-  agent(`Fetch all stories in epic ${epic.key}.`, { label: epic.key, phase: 'discover', schema: STORIES })
-    .then(r => ({ epic, stories: r.stories })))
-
-phase('qa')
-const results = await pipeline(withStories, ews =>
-  parallel(ews.stories.map(story => () =>
-    agent(
-      `Check story ${story.key} acceptance criteria against the code. AC: ${JSON.stringify(story.acceptanceCriteria)}`,
-      { label: `${ews.epic.key}/${story.key}`, phase: 'qa', schema: VERDICT },
-    ))))
-
-return { board: boardId, epics: epics.epics.length, results: results.flat().filter(Boolean) }
-```
-
-The engineer wrote none of that JavaScript. They drew the thread; the agent wrote the mechanism. If
-the workflow runtime later renames `pipeline` or adds a primitive, the *thread is unchanged* — the
-engineer just regenerates.
-
-> Agents in this workflow fetch from Jira, so they rely on the Atlassian MCP tools being available at
-> run time. ThreadForge does not model MCP wiring; the `does` prose names the board/epic/story and the
-> agent reaches the tools itself.
-
----
-
-# 5. Primary User
-
-One user: **me** (the author), and developers like me who think in threads and want to compose Claude
-workflows repeatably without learning or tracking the workflow API. It is a personal power tool, not a
-team/SaaS product. No multi-tenant, auth, collaboration, or PM surface.
-
----
-
-# 6. Non-Goals
-
-ThreadForge is **not** a project manager and, as of v3, **not a compiler**. Out of scope:
-
-```text
-- generating workflow JavaScript inside the tool (the AI agent does this, via the skill)
-- a hand-written IR or code generator that the tool must keep in sync with the runtime API
-- requiring the engineer to know workflow primitives or the workflow API reference
-- projects, clients, business goals, requirements management, requirement→thread linking
-- the v1 dependency edge types, dependency contracts, per-thread-type readiness validators
-- execution planner / conflict detection / worktree recommendation engine
-- multi-tenant, auth, collaboration, sync
-```
-
----
-
-# 7. Core Concepts
-
-## 7.1 Thread
-
-The unit of work and the tool's source of truth. A thread has a `meta` block, a **begin** node
-(optional `args`), a `root` activity tree, and an **end** node (`review`: what "done/validated" means).
-One thread → one generated `.js` file.
-
-## 7.2 Activity
-
-A node in the thread tree. Activities map to the four thread types plus `agent`, `loop`, and `call`
-(§3). They describe *shape and intent*, never code.
-
-## 7.3 Handoff (data flow, by name)
-
-An activity may declare `produces: "<name>"`. Downstream activities reference that name — in `does`
-prose as `{name}`, or in a `fanout`'s `over`. Handoffs are **named at the intent level**; the engineer
-does *not* write schemas. The AI infers the concrete JSON schema for each produced value and wires the
-fields. This is the deliberate abstraction line: **structure named by the engineer, schema realized by
-the AI.**
-
-## 7.4 Codegen agent
-
-The AI that turns a thread into a script. It receives (a) the serialized thread, (b) the
-dynamic-workflows `SKILL.md`, and (c) the [Appendix A](#appendix-a--codegen-agent-contract) rules, and returns a plain-JS
-workflow. In the MVP the tool *packages the request*; Claude Code runs it (see §9).
-
-## 7.5 Catalog
-
-The local library of threads and their last-generated workflows. It powers reopen/edit, thread-type
-templates (§12), and **composition** — a `call` activity picks a workflow from the catalog so one
-workflow can invoke another (§13).
-
----
-
-# 8. Data Model
+The normative schema is `skills/threadforge/references/thread-schema.json` (JSON Schema 2020-12).
+Informal shape:
 
 ```ts
 type Thread = {
-  id: string
-  meta: {
-    name: string           // kebab-case; becomes the filename
-    description: string
-    whenToUse?: string
-  }
-  begin?: { args?: ArgSketch }   // human start node: rough arg names/types, not a strict schema
-  root: Activity                 // the topology tree
-  end?: { review?: string }      // human end node: what "validated/done" means → guides return shape
-  createdAt: string
-  updatedAt: string
-  schemaVersion: string
+  schemaVersion: '1'
+  meta: { name: string /* kebab-case; the filename */; description: string; whenToUse?: string }
+  begin?: { args?: Record<string, string> /* name -> rough type sketch */; intent?: string }
+  root: Activity
+  end: { review: string /* what "done/validated" means; drives the return shape */ }
 }
 
 type Activity =
-  | AgentActivity
-  | SequenceActivity     // C-thread
-  | ParallelActivity     // P-thread
-  | FanOutActivity       // B-thread (orchestrate) or F-thread (compare)
-  | LoopActivity
-  | CallActivity
-
-type AgentActivity = {
-  kind: 'agent'
-  id: string
-  does: string                 // intent in prose; may reference handoffs as {name}
-  produces?: string            // names this activity's output for downstream handoffs
-  isolationHint?: boolean      // engineer's hint that this mutates files; AI decides worktree
-}
-
-type SequenceActivity = {      // C: ordered, with handoff between steps
-  kind: 'sequence'
-  id: string
-  steps: Activity[]
-}
-
-type ParallelActivity = {      // P: fixed branches, barrier
-  kind: 'parallel'
-  id: string
-  branches: Activity[]
-  barrierReason: string        // why all results are needed together (required, §11)
-}
-
-type FanOutActivity = {        // B (orchestrate) / F (compare): per-item work over a list
-  kind: 'fanout'
-  id: string
-  mode: 'orchestrate' | 'compare'
-  over: string                 // handoff name of the list to iterate
-  as: string                   // item binding name, e.g. "epic"
-  body: Activity               // applied per item; may nest further
-}
-
-type LoopActivity = {
-  kind: 'loop'
-  id: string
-  body: Activity
-  stopCondition: string        // required
-  noProgressCondition: string  // required
-  maxRounds?: number
-}
-
-type CallActivity = {          // thread composition → workflow('<name>', args)
-  kind: 'call'
-  id: string
-  workflowName: string         // from the catalog
-  args?: Record<string, string>
-}
-
-type ArgSketch = Record<string, string>   // e.g. { boardId: 'string (required)' }
+  | { kind: 'agent'; does: string; produces?: string; isolationHint?: boolean }
+  | { kind: 'sequence'; steps: Activity[] }
+  | { kind: 'parallel'; branches: Activity[]; barrierReason: string }        // required
+  | { kind: 'fanout'; mode: 'orchestrate' | 'compare'; over: string; as: string
+      agents?: number /* compare only */; body: Activity }
+  | { kind: 'loop'; body: Activity; stopCondition: string; noProgressCondition: string  // both required
+      maxRounds?: number }
+  | { kind: 'call'; workflowName: string; args?: Record<string, string>; produces?: string }
 ```
 
-The thread serialized to JSON is the **textual thread representation** fed to the codegen agent.
+Changes from v3: no `id`/`createdAt`/`updatedAt` (files + git provide identity and history); `end`
+is mandatory (a thread without review criteria is a vague thread); compare fanouts may pin their
+attempt count via `agents`; `call` may name its return via `produces`. Handoff scoping: a name is in
+scope for an activity if it is a begin arg, a `produces` anywhere in an *earlier sibling's* subtree
+(at any ancestor level), or an enclosing fanout's `as` binding. Parallel branches cannot see each
+other's outputs (they are concurrent).
 
 ---
 
-# 9. Codegen (delegated, not compiled)
+# 5. The Elicitation Protocol (guarding against vagueness)
 
-ThreadForge does **not** contain a compiler, IR, or code generator. Generation is a prompt to an AI
-agent:
+Defined normatively in `skills/threadforge/SKILL.md`. The protocol:
 
-```text
-Thread (JSON)  +  dynamic-workflows SKILL.md  +  Appendix A rules
-    ↓  packaged as a codegen request
-AI codegen agent  (writes the script, chooses primitives, prompts, schemas)
-    ↓
-.claude/workflows/<meta.name>.js
-```
+1. **Template first** — match the request to the nearest shipped template; never start from a blank
+   tree.
+2. **Interview** — fill what the user already said; ask targeted questions for the rest. The
+   non-negotiables are precisely the schema's required fields: fanout's exact list; parallel's
+   barrier justification (no defensible reason → restructure, don't decorate); loop's stop and
+   no-progress conditions; resolvable handoff names; concrete begin args and end review. Mid-run
+   human decisions split into two threads (see §10 / contract C8). Reuse is checked before new work
+   is drawn.
+3. **Validate** — `scripts/validate-thread.mjs`, deterministic, no dependencies. Errors block;
+   the agent must resolve them **by asking, not guessing**.
+4. **Approve** — the engineer approves the rendered diagram, not JSON, not code. No codegen before
+   an explicit yes.
+5. **Codegen** — per the contract (§10), grounded by the worked example.
+6. **Close** — artifacts recorded; future edits go thread-first, then regen.
 
-**MVP mechanism — no API keys, no runtime coupling.** The tool produces a ready-to-run *codegen
-request*: the serialized thread plus an instruction to apply the dynamic-workflows skill and the
-Appendix A rules. The engineer runs this in Claude Code (e.g. paste, or "generate the workflow for this
-thread"), and Claude — using the skill — writes the `.js` into `.claude/workflows/`. The generated
-script is pulled back into the catalog as this thread's current artifact.
+The two hardest guarantees, stated as invariants:
 
-**Why delegate instead of compile:**
-
-* the engineer never learns the workflow API; the *skill*
-  ([dynamic-workflows `SKILL.md`](https://github.com/peymanvahidi/awesome-claude-dynamic-workflows/blob/master/dynamic-workflows-skill/SKILL.md))
-  is the source of primitive knowledge
-* runtime/API evolution is absorbed by regenerating against an updated skill — threads don't change
-* the AI writes the soft parts (prompts, schemas) far better than a template ever could
-
-**What the codegen agent is instructed to guarantee** (from `SKILL.md` + Appendix A): a pure-literal
-`export const meta`; plain JavaScript only; `pipeline()` as the default fan-out and `parallel()` only
-for genuine barriers; explicit `phase` inside fan-outs; `args` read as real structured values;
-`isolation: 'worktree'` only for parallel file mutation; no `Date.now()`/`Math.random()`/filesystem/
-shell.
-
-**Post-MVP:** optional direct API/SDK call so "Generate" happens in-app; optional round-trip validation
-of the returned script (§11). See §17.
+- **No workflow JavaScript is ever written from a thread that has validation errors or an
+  unapproved diagram.**
+- **No validation error is ever resolved by the agent guessing.**
 
 ---
 
-# 10. UI
+# 6. Validation (deterministic, thread-only)
 
-## 10.1 Primary editor: thread outline (source of truth)
-
-Threads are **trees** (begin → sequence/fan-out/nesting → agent → end). A collapsible nested **outline**
-expresses them clearly and cheaply. Example rendering of the §4 thread:
+`scripts/validate-thread.mjs` — plain Node, zero dependencies, exit 1 on errors. It validates the
+thread, never generated JS. Errors (block codegen):
 
 ```text
-◇ begin  args: { boardId }
-▸ sequence (C)
-    ● agent: fetch epics on {boardId}            → produces epics
-    ⤨ fanout·orchestrate over epics as epic      (B)
-        ● agent: fetch stories in {epic}          → produces stories
-    ⤨ fanout·orchestrate over stories as story    (B)
-        ⤨ fanout·compare over story as s          (F)
-            ● agent: check {s} AC vs code          → produces verdict
-◆ end  review: one verdict per story, grouped by epic
+- malformed shape (unknown kinds, missing required fields, non-kebab meta.name)
+- a handoff reference ({name} in does / call args, or fanout.over) that nothing in scope produces
+  (the message lists what IS in scope — typo repair is one glance)
+- parallel without barrierReason, or with fewer than two branches
+- loop missing stopCondition or noProgressCondition
+- missing end.review
 ```
 
-Outline features:
+Warnings (surfaced, don't block):
 
 ```text
-- add / reorder / delete / collapse activities
-- pick an activity kind from the thread-type palette (§3): sequence(C) / parallel(P) /
-  fanout·orchestrate(B) / fanout·compare(F) / agent / loop / call
-- nest a fanout/loop body (indented subtree)
-- per-agent: a single "does" (intent) textarea + optional "produces" name
-- handoff picker: reference an upstream `produces` name from a dropdown (in `does` or `over`)
-- inline structural validation markers (§11)
-```
-
-There is **no per-agent schema editor and no primitive selector** — those are the AI's job.
-
-## 10.2 Begin / End panels
-
-* **Begin:** sketch `args` (names + rough types). Generates nothing itself; guides the AI's arg reads.
-* **End:** free-text `review` describing what "done/validated" means; guides the AI's return shape and
-  any human-checkpoint split (Appendix A.7 "Human checkpoints").
-
-## 10.3 Generate panel
-
-A "Generate workflow" action that packages the codegen request (§9) and, once Claude returns the
-script, shows it read-only (Monaco) with copy/download. The engineer treats this as output to review,
-not to edit — edits go to the thread and regenerate.
-
-## 10.4 Catalog
-
-Saved threads and their last-generated workflows. Reopen/edit a thread; browse generated scripts;
-select a workflow as the target of a `call` activity (§13). Seeded with thread-type templates (§12).
-
----
-
-# 11. Validation (structural, on the thread only)
-
-ThreadForge validates the **thread**, not generated JavaScript (the skill + AI own code correctness).
-Warn when:
-
-```text
-- a handoff reference ({name} or fanout.over) points at a `produces` name that doesn't exist upstream
-- a fanout's `over` names a handoff that isn't plausibly a list
-- a parallel activity has no barrierReason
-- a loop activity is missing stopCondition or noProgressCondition
-- a call activity names a workflow not in the catalog
-- meta.name is not kebab-case / collides with an existing catalog entry
-- the thread has no begin intent or no end review (both human nodes should exist)
-- estimated agent count may exceed practical limits (concurrency ~16 / total 1000)
-```
-
-Post-MVP optional: after codegen, lint the returned `.js` against the Appendix A rules as a safety net
-(§17) — but the primary contract is that the skill produces conformant code.
-
----
-
-# 12. Thread-Type Templates
-
-Seed the catalog with skeleton threads for the canonical thread types and the well-known workflow
-patterns, so the engineer starts from a shape, not a blank canvas:
-
-```text
-Thread types (from thread-based engineering):
-- C  sequential:            begin → agent → agent → end
-- P  parallel + barrier:    begin → parallel[ agent, agent, agent ] → end
-- B  nested orchestration:  begin → fanout·orchestrate over list → (sub-thread) → end
-- F  fan-out comparative:   begin → fanout·compare over agents → judge → end
-
-Pattern shapes (from the dynamic-workflows skill/guide):
-- inspect → implement → verify (C)
-- fan-out and synthesize (B → barrier)
-- pipeline over discovered items (agent → B)
-- adversarial verification: produce → refute → keep survivors (F)
-- generate and filter
-- tournament (F + bracket)
-- loop until done (loop)
-```
-
-Each template is a `Thread` with placeholder `does` prose and pre-named handoffs.
-
----
-
-# 13. Catalog & Composition (call one workflow from another)
-
-The catalog is also the **workflow registry** for composition. A `call` activity references a
-cataloged workflow by `meta.name`; the codegen agent compiles it to `workflow('<name>', args)`, letting
-one workflow invoke another (the skill's `workflow()` primitive; nesting is one level deep).
-
-```text
-- browse cataloged workflows (name, description, whenToUse, args sketch)
-- drop a `call` activity into a thread and pick the target from the catalog
-- the AI wires workflow('<name>', { ...args }) with args mapped from the enclosing thread
-```
-
-This makes the catalog the reuse surface: build small threads once, then call them from larger ones.
-
----
-
-# 14. Persistence
-
-```text
-MVP: IndexedDB (thread catalog + last-generated scripts), LocalStorage fallback, JSON import/export
-Export: the thread JSON; and the generated <meta.name>.js (plus optional starter args.json)
-```
-
-No cloud, no auth, no sync.
-
----
-
-# 15. Technical Architecture
-
-```text
-Next.js (or Vite) + TypeScript + React
-Tailwind + a lightweight component kit
-Zustand for editor state
-Monaco for the read-only generated-script view
-```
-
-Package boundaries (framework-independent core):
-
-```text
-thread-model        // Thread / Activity / handoff types + tree operations
-thread-serialize    // Thread → textual (JSON) representation for the codegen agent
-thread-validate     // structural validation (§11)
-codegen-request     // assemble { thread, SKILL.md ref, Appendix A rules } into a codegen prompt
-                    //   (MVP: emit a Claude Code request; post-MVP: call the API/SDK)
-ui-outline          // the thread outline editor + begin/end panels
-ui-catalog          // catalog, templates, composition picker, generated-script preview
-```
-
-Rules:
-
-* **there is no `workflow-compiler` / `workflow-ir` package** — codegen is delegated to the AI.
-* the model, serializer, and validation must not depend on any UI library.
-* the tool must not embed knowledge of workflow primitives beyond what it passes through to the skill;
-  the **skill is the single source of truth** for how threads become code.
-
----
-
-# 16. MVP Scope
-
-A weekend-or-two build:
-
-1. Thread outline editor with the activity palette: `agent`, `sequence`(C), `parallel`(P),
-   `fanout`(orchestrate=B / compare=F), `loop`, `call`.
-2. Per-agent single `does` (intent) field + optional `produces` name. No schema editor.
-3. Handoff picker: reference an upstream `produces` name in `does` and in `fanout.over`.
-4. Begin panel (args sketch) + End panel (review text).
-5. Structural validation (§11).
-6. Generate: package the codegen request (thread + skill + Appendix A rules), run it via Claude Code,
-   and show the returned `.js` read-only with copy/download.
-7. Local catalog with save/reopen, seeded with thread-type + pattern templates (§12), and `call`-based
-   composition (§13).
-
-The MVP is proven when the §4 Jira thread is drawn once, handed to the AI, and the AI produces a
-correct, runnable workflow — and I reach for drawing threads instead of hand-writing scripts or
-free-prompting Claude.
-
----
-
-# 17. Acceptance Criteria
-
-The tool is complete (for MVP) when:
-
-1. I can create a thread and edit its `meta`, `begin` args, and `end` review.
-2. I can build the thread tree from the activity palette, including `sequence`, `parallel`, and both
-   `fanout` modes.
-3. I can build a two-level nested fan-out (the §4 shape) entirely as a thread, writing no code.
-4. I can give an `agent` activity a `does` intent and a `produces` name.
-5. I can wire a downstream activity to an upstream `produces` name via the handoff picker.
-6. I can sketch `args` in the begin node and reference them in `does`.
-7. Structural validation flags dangling handoffs, non-list fan-out targets, barrier-less parallels,
-   loops missing stop/no-progress conditions, and unknown `call` targets.
-8. "Generate" packages the thread + dynamic-workflows skill + Appendix A rules into a codegen request.
-9. Running that request in Claude Code produces a plain-JS workflow that starts with a pure-literal
-   `export const meta` and uses `agent()`/`pipeline()`/`parallel()`/`phase()`/`log()` per the skill
-   and [Appendix A](#appendix-a--codegen-agent-contract).
-10. The §4 Jira thread generates a workflow that compiles-by-hand-inspection to the expected topology,
-    exports into a `.claude/workflows/`-compatible shape, and runs in Claude Code.
-11. I can add a `call` activity referencing a cataloged workflow, and the generated script invokes it
-    via `workflow()`.
-12. Saved threads reopen, and regenerating a thread produces an equivalent workflow (topology-stable
-    even if prose/schemas differ run to run).
-
----
-
-# 18. Post-MVP (only if I keep reaching for it)
-
-```text
-- in-app "Generate" via direct Claude API/SDK call (no manual paste)
-- round-trip validation: lint the AI-returned script against the Appendix A rules as a safety net
-- read-only graph visualization of the thread tree
-- richer catalog: versioned generated scripts, diff a regeneration against the previous script
-- deeper composition: multi-level workflow() nesting where the runtime allows
-- args presets per thread; direct write into a repo's .claude/workflows/
-- more templates harvested from real usage
+- orchestrate fanout over a name that doesn't read as a list
+- compare fanout without a pinned agent count
+- duplicate produces names; args shadowed by produces
+- call target not present in .claude/workflows/ (composition order — generate the callee first)
+- meta.name colliding with an existing generated workflow
+- fan-outs nested 3+ deep (agent counts multiply; runtime caps ~16 concurrent / 1000 total)
+- missing begin node; single-step sequences
 ```
 
 ---
 
-# Appendix A — Codegen Agent Contract
+# 7. Visualization (deterministic, generated, never hand-drawn)
 
-This appendix is the **contract the AI codegen agent must satisfy** when turning a thread into a
-workflow `.js`. It is deliberately stable. The dynamic-workflows `SKILL.md` is the *authoritative and
-evolving* source for how the primitives behave; where the skill and this appendix ever diverge, the
-skill wins and this appendix should be updated. ThreadForge passes both to the agent at generation
-time (§9). The tool must **not** re-implement these rules as a compiler — they exist so the agent's
-output is checkable and so a human can review a generated script.
+`scripts/render-thread.mjs` — thread → Mermaid flowchart; `--doc` emits the full
+`threads/<name>.md` (diagram + handoff table + human nodes + artifact pointer). Mapping: agents are
+boxes (⚙, with `→ produces` shown), fanouts/loops/parallels are labeled subgraphs (⤨ / ↻ / ∥ with
+the barrier reason inline), `call` is a subroutine box (⇢), begin/end are dashed stadium nodes
+(◇/◆). Because the diagram is a pure function of the thread, it is the trusted review surface:
+the engineer approves the diagram, and "show me what this workflow does" is answered by rendering,
+never by pasting JavaScript. Existing hand-written workflows enter the system via **decompile**
+(script → thread → diagram; flagged for review).
 
-## A.1 References the builder (and the agent) should study
+---
 
-These are the primary sources; the two starred (★) are the load-bearing ones — the thread model the
-engineer authors in, and the skill the codegen agent generates from.
+# 8. Templates
 
-```text
-1. ★ Thread-Based Engineering guide — the source model. Threads as units of agent-driven work,
-     the two mandatory human nodes (begin/end), and the C/P/B/F thread types this tool's palette maps to.
-     https://claudefa.st/blog/guide/mechanics/thread-based-engineering
-
-2. ★ Awesome Claude Dynamic Workflows — dynamic-workflows-skill/SKILL.md  (AUTHORITATIVE for codegen)
-     The practical authoring rules the agent follows: agent(), pipeline(), parallel(), phase(), log(),
-     workflow(), schema usage, worktree isolation, args, budget handling, orchestration patterns.
-     https://github.com/peymanvahidi/awesome-claude-dynamic-workflows/blob/master/dynamic-workflows-skill/SKILL.md
-     (repo: https://github.com/peymanvahidi/awesome-claude-dynamic-workflows)
-
-3. Dynamic Workflows guide — when to use a workflow (scale / parallelization / verification; NOT
-     two-line fixes) and higher-level patterns: adversarial verification, fan-out-and-synthesize,
-     classify-and-act, generate-and-filter, tournament, loop-until-done. Establishes the framing that
-     "workflows operate as an orchestration layer beneath thread-based engineering."
-     https://claudefa.st/blog/guide/development/dynamic-workflows
-     (see "When not to use a workflow": https://claudefa.st/blog/guide/development/dynamic-workflows#when-not-to-use-a-workflow)
-
-4. Claude Code dynamic-workflows documentation — how saved workflows behave, how scripts live under
-     .claude/workflows/, and runtime constraints: no normal mid-run user input, no direct
-     filesystem/shell access from the script, a concurrency cap, a total-agent cap.
-
-5. Claude Agent SDK (TypeScript) reference — workflow helper APIs and execution behavior.
-```
-
-## A.2 Output rules — plain JavaScript only
-
-The generated workflow body must be **plain JavaScript**, never TypeScript, even though the tool itself
-is written in TypeScript. The script must not contain:
+Shipped inside the skill (`templates/*.thread.json`), all schema-valid, placeholders in
+`<angle brackets>`:
 
 ```text
-- TypeScript type annotations, interfaces, or generics
-- imports from Node.js, or any module import
-- direct filesystem access or direct shell access
-- Date.now(), Math.random(), or new Date() without arguments
+Thread types:            c-sequential, p-parallel-barrier, b-nested-orchestration, f-fanout-compare
+Workflow patterns:       inspect-implement-verify, fanout-and-synthesize, adversarial-verification,
+                         generate-and-filter, tournament, loop-until-done
 ```
 
-The workflow script only *coordinates* agents; the agents perform the repository work. Files must be
-named `.claude/workflows/<meta.name>.js` (extension `.js`, never `.ts`).
+Harvesting is `cp`: any real thread that proves reusable gets its values re-placeholder-ed and
+committed as a new template.
 
-## A.3 Required workflow shape — pure-literal `meta`
+---
 
-Every generated script must begin with a **pure literal** `meta` object — no variables, function calls,
-spreads, or template interpolation:
+# 9. Catalog & Composition
 
-```js
-export const meta = {
-  name: 'audit-routes',          // required; kebab-case; matches the filename
-  description: 'Audit every route handler for missing auth checks',  // required
-  whenToUse: '...',              // optional
-  phases: ['discover', 'audit'], // optional; if phase() is used, titles must match exactly
-}
-```
+The catalog **is the filesystem**: `threads/` holds intent, `.claude/workflows/` holds artifacts,
+git holds history. A `call` activity references a workflow by `meta.name`; codegen compiles it to
+`workflow('<name>', args)` (runtime nesting: one level). During elicitation the skill scans both
+directories and proposes `call` over redefinition when an existing workflow covers a step. The
+validator warns when a `call` targets a workflow that doesn't exist yet, which also enforces
+generation order for compositions.
 
-## A.4 Primitives and how thread activities map to them
+---
 
-The primitive signatures and options (`agent`, `pipeline`, `parallel`, `phase`, `log`, `workflow`) are
-**not restated here** — the [dynamic-workflows `SKILL.md`](https://github.com/peymanvahidi/awesome-claude-dynamic-workflows/blob/master/dynamic-workflows-skill/SKILL.md)
-is the authoritative, evolving reference and the tool passes it to the agent at generation time. This
-spec only records the mapping and the rules specific to ThreadForge; inline API detail appears solely
-in the §4 example.
+# 10. Codegen Contract
 
-Thread activity → primitive (see §3 for the full table): `agent`→`agent()`, `sequence`→sequential
-`await`s / `pipeline()` stages, `parallel`→`parallel()`, `fanout`→`pipeline()` or `parallel()` by mode,
-`loop`→a bounded `while`, `call`→`workflow()`.
-
-Rules the agent must honor (ThreadForge-specific; everything else defers to the skill):
-
-* **`pipeline()` is the default fan-out**; use `parallel()` only for a genuine barrier (a later step
-  needs all prior results at once) — never merely because the code reads more cleanly. A ThreadForge
-  `parallel` activity carries a `barrierReason`; the agent should honor and reflect it.
-* Prefer a **schema** whenever a downstream activity references an upstream `produces` handoff — this
-  is what makes the handoff reliable. The engineer names the handoff; the agent infers the schema.
-* Inside a fan-out, always set an explicit **`phase`** in the `agent()` options.
-
-## A.5 Args handling
-
-Generated workflows may read the global `args`. Read arg values as **real structured values** — never
-stringify an array/object into a prompt or call:
-
-```js
-const targetPath = args?.targetPath || 'src/routes'
-```
-
-ThreadForge's begin-node args sketch (§8) guides these reads and an optional starter `args.json`
-(structured JSON, not stringified).
-
-## A.6 Worktree isolation
-
-The agent may add `isolation: 'worktree'` to an `agent()` call **only** when all of the following hold:
+Ships as `skills/threadforge/references/codegen-contract.md` (normative copy), grounded by
+`references/worked-example.md` (the §12 Jira thread with its rendered diagram and generated script).
+Summary of the rules — the runtime's own dynamic-workflows documentation is authoritative over all
+of them if they ever diverge:
 
 ```text
-- multiple agents edit files in parallel
-- the target files may overlap
-- the change is large or risky, or the engineer explicitly asked for isolated parallel execution
+C1  plain JS only; no imports, no fs/shell, no Date.now()/Math.random()/argless new Date()
+C2  pure-literal export const meta; meta.name = thread name = filename
+C3  activity→primitive mapping; pipeline() is the default fan-out; parallel() only for declared
+    barriers (thread parallel / compare judge); explicit phase inside fan-outs; filter(Boolean)
+C4  every consumed handoff gets an inferred JSON schema; interpolate fields, not JSON.stringify blobs
+C5  args read as real structured values; required per the begin sketch
+C6  'does' is intent — expand to self-contained subagent prompts
+C7  worktree isolation only for overlapping parallel file mutation; isolationHint is a signal
+C8  human checkpoints split into two threads; a workflow never pauses for input
+C9  return shape derived from end.review, with counts so gaps are visible; log() at boundaries
+C10 respect runtime caps; never bound coverage silently
 ```
 
-Never use worktree isolation for read-only audits. A ThreadForge `agent` activity may set
-`isolationHint: true`; the agent treats it as a signal, not a mandate.
+---
 
-## A.7 Human checkpoints — split, don't pause
+# 11. Distribution
 
-Generated workflows must **not depend on normal mid-run human input.** If a thread needs human review
-between phases (approve a plan before applying it), it must be modeled as **two threads → two
-workflows**, with the human checkpoint between them:
+The repo is a standard `skills`-CLI skill repository:
 
 ```text
-design-database-migration.js   →   [human reviews & approves]   →   apply-database-migration.js
+threadforge/
+  README.md
+  LICENSE
+  docs/spec.md                          # this document
+  skills/
+    threadforge/
+      SKILL.md                          # the protocol (frontmatter: name + description)
+      scripts/validate-thread.mjs       # deterministic gate
+      scripts/render-thread.mjs         # deterministic view
+      references/thread-schema.json     # normative thread schema
+      references/codegen-contract.md    # normative codegen rules
+      references/worked-example.md      # canonical thread→diagram→script chain
+      templates/*.thread.json           # 10 starting shapes
 ```
 
-The engineer models this split at the thread layer (two threads in the catalog, the second `call`ing
-or following the first); the agent must never emit a script that blocks waiting for a human.
+Install: `npx skills add Sarps/threadforge` (project) or `-g` (global); works for Claude Code and
+every agent the CLI supports. Update: `npx skills update threadforge`. The skill's supporting files
+travel with the install, so validator, renderer, templates, and contract are always version-matched
+to the protocol.
 
-## A.8 What structural validation still checks (tool side)
+**Compatibility note:** thread authoring, validation, and rendering work in any agent that loads
+skills. *Executing* the generated script requires an agent with the dynamic-workflows runtime
+(Claude Code). The scripts require only Node ≥ 16, already present wherever `npx` ran.
 
-Validation runs on the **thread**, not the generated JS (§11). The tool does not compile or lint the
-script in the MVP; if a post-MVP safety-net linter is added, it checks the returned `.js` against A.2–A.6
-above. The primary contract remains: **the skill + this appendix make the agent produce conformant
-code, and a human can review it.**
+---
+
+# 12. Motivating Example
+
+Unchanged in spirit from v3, now a shipped artifact: `references/worked-example.md` carries the
+`verify-jira-stories` thread (fetch epics → per-epic fetch stories → per-story 3-verifier majority
+vote), its rendered diagram, and the generated workflow, with each codegen decision annotated
+against the contract. Agents in that workflow reach Jira via MCP tools at run time; ThreadForge does
+not model MCP wiring — the `does` prose names the board and the agents reach the tools themselves.
+
+---
+
+# 13. Non-Goals
+
+```text
+- a web app, canvas editor, or any GUI (v3's central mistake; revisit only per §16)
+- a compiler/IR the tool must keep in sync with the runtime API (v2's central mistake)
+- validating or linting generated JavaScript (the runtime docs + contract own code correctness;
+  the skill only syntax-checks)
+- Mermaid as the source of truth (it's a projection; it cannot fail validation, so it cannot guard)
+- projects, clients, requirements management, multi-tenant, auth, collaboration, sync
+- an npm package of ThreadForge itself — the `skills` CLI is the distribution channel
+```
+
+---
+
+# 14. Acceptance Criteria
+
+1. `npx skills add <path-or-repo>` discovers and installs the `threadforge` skill.
+2. Asking for a workflow in prose triggers the protocol: template selection, an interview that asks
+   for (at minimum) any missing fanout list, barrier reason, loop conditions, and end review.
+3. The interview writes `threads/<name>.thread.json` conforming to `thread-schema.json`.
+4. `validate-thread.mjs` exits 1 on: dangling handoffs, barrier-less parallels, condition-less
+   loops, missing end review, unknown kinds — and its dangling-handoff message names what is in scope.
+5. `render-thread.mjs --doc` produces valid Mermaid for nested fan-outs (the §12 two-level shape),
+   loops, parallels, and calls; the diagram is shown and approved before any codegen.
+6. No `.js` is written while the thread has validation errors or the diagram is unapproved.
+7. Generated scripts satisfy the contract: pure-literal meta, plain JS, pipeline-default,
+   schema-realized handoffs, structured args, no pausing for humans; they syntax-check.
+8. The §12 thread generates a workflow whose topology matches by inspection and runs in Claude Code.
+9. A `call` activity to a cataloged workflow compiles to `workflow('<name>', ...)`; calling a
+   non-existent workflow is warned at validation time.
+10. All 10 shipped templates validate with zero errors.
+11. Editing a thread and regenerating updates diagram and script; hand-editing the generated JS is
+    warned against by the protocol.
+12. Decompile recovers a validating thread + diagram from the worked example's script.
+
+---
+
+# 15. Verified at Build Time
+
+Criteria 3, 4, 5, 7 (syntax check), and 10 were verified during initial implementation: the worked
+example validates clean and renders; a deliberately vague thread fails with 8 errors naming each
+missing commitment; all templates validate; the example workflow body parses.
+
+---
+
+# 16. Post-MVP (only if real usage demands it)
+
+```text
+- versioned regeneration diffs (thread unchanged, skill updated → diff the two scripts)
+- a static single-file HTML viewer for thread JSON (drag-drop; only if Mermaid-in-markdown proves
+  insufficient — this is the ONLY door back toward a UI, and it stays read-only)
+- richer decompile (round-trip fidelity report)
+- template packs per domain (release engineering, research, migrations)
+- a linter for generated scripts against C1–C7 as a safety net
+```

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-p-parallel-barrier",
+    "description": "TEMPLATE (P — parallel + barrier): fixed branches run at once, then a step that needs ALL their results together. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "A fixed set of independent perspectives or workstreams whose results must be merged"
+  },
+  "begin": {
+    "args": { "target": "string (required) — <what all branches examine>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "parallel",
+        "barrierReason": "<why a later step needs all branch results at once — e.g. they are merged into a single report; if you cannot say why, use a sequence instead>",
+        "branches": [
+          {
+            "kind": "agent",
+            "does": "<branch 1: e.g. audit {target} for security issues>",
+            "produces": "securityFindings"
+          },
+          {
+            "kind": "agent",
+            "does": "<branch 2: e.g. audit {target} for performance issues>",
+            "produces": "perfFindings"
+          },
+          {
+            "kind": "agent",
+            "does": "<branch 3: e.g. audit {target} for missing test coverage>",
+            "produces": "coverageFindings"
+          }
+        ]
+      },
+      {
+        "kind": "agent",
+        "does": "merge {securityFindings}, {perfFindings} and {coverageFindings} into <one deduplicated, severity-ranked report>",
+        "produces": "report"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. one merged report, deduplicated, ranked by severity>"
+  }
+}

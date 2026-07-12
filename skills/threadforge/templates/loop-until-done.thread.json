@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-loop-until-done",
+    "description": "TEMPLATE (pattern): repeat a unit of work until a goal condition holds or progress stalls. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "Unknown-size work with a checkable goal — fix failing tests until green, hunt bugs until two dry rounds"
+  },
+  "begin": {
+    "args": { "goal": "string (required) — <the condition that ends the loop, checkable by an agent>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "loop",
+        "stopCondition": "<e.g. all tests pass / two consecutive rounds find nothing new>",
+        "noProgressCondition": "<e.g. two consecutive rounds with no improvement in the metric>",
+        "maxRounds": 10,
+        "body": {
+          "kind": "agent",
+          "does": "make one round of progress toward {goal}: <e.g. fix the next failing test>; report what changed and the current metric",
+          "produces": "roundReports"
+        }
+      },
+      {
+        "kind": "agent",
+        "does": "summarize {roundReports}: goal reached or why we stopped, and what remains",
+        "produces": "summary"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. the goal metric verified independently, plus a round-by-round trail>"
+  }
+}

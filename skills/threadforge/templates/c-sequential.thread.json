@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-c-sequential",
+    "description": "TEMPLATE (C — chained/sequential): phases in order with a named handoff between them. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "Work that flows through distinct phases where each phase consumes the previous phase's output"
+  },
+  "begin": {
+    "args": { "target": "string (required) — <what the work runs against, e.g. a path or ticket id>" },
+    "intent": "<why this thread is being run>"
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "agent",
+        "does": "<first phase: e.g. inspect {target} and list everything that needs attention>",
+        "produces": "findings"
+      },
+      {
+        "kind": "agent",
+        "does": "<second phase: act on {findings}>",
+        "produces": "outcome"
+      }
+    ]
+  },
+  "end": {
+    "review": "<what you will look at to call this done, e.g. every finding addressed or explicitly skipped with a reason>"
+  }
+}

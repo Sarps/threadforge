@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-tournament",
+    "description": "TEMPLATE (pattern, F + bracket): generate candidates, then judge them head-to-head in elimination rounds until one remains. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "When absolute scoring is unreliable but pairwise comparison is easy — designs, drafts, prompts"
+  },
+  "begin": {
+    "args": { "task": "string (required) — <what the candidates compete on>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "agent",
+        "does": "generate <8> independent candidates for {task}, each from a distinct angle",
+        "produces": "candidates"
+      },
+      {
+        "kind": "loop",
+        "stopCondition": "one candidate remains",
+        "noProgressCondition": "a round fails to eliminate anyone",
+        "maxRounds": 4,
+        "body": {
+          "kind": "agent",
+          "does": "pair up the remaining {candidates}, judge each pair head-to-head against {task}, and advance only the winners",
+          "produces": "survivors"
+        }
+      },
+      {
+        "kind": "agent",
+        "does": "present the final winner from {survivors} with the bracket history and why it won each round",
+        "produces": "winner"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. a single winner plus a bracket that shows the judging was real>"
+  }
+}

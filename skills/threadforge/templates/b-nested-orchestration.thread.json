@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-b-nested-orchestration",
+    "description": "TEMPLATE (B — nested orchestration): discover a list of items, then run a sub-thread per item. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "Per-item work over a list whose size is unknown until an agent discovers it"
+  },
+  "begin": {
+    "args": { "scope": "string (required) — <where to discover items, e.g. a directory or board>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "agent",
+        "does": "<discover: e.g. list every item in {scope} that needs work>",
+        "produces": "workItems"
+      },
+      {
+        "kind": "fanout",
+        "mode": "orchestrate",
+        "over": "workItems",
+        "as": "item",
+        "body": {
+          "kind": "sequence",
+          "steps": [
+            {
+              "kind": "agent",
+              "does": "<per-item work: e.g. apply the fix to {item}>",
+              "produces": "itemResults"
+            },
+            {
+              "kind": "agent",
+              "does": "<per-item check: e.g. verify the fix to {item} using {itemResults}>",
+              "produces": "itemVerdicts"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "agent",
+        "does": "summarize {itemVerdicts} into <a final report>",
+        "produces": "report"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. one verdict per discovered item; no item skipped silently>"
+  }
+}

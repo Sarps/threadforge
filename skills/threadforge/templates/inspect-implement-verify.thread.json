@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1",
+  "meta": {
+    "name": "template-inspect-implement-verify",
+    "description": "TEMPLATE (pattern, C-shaped): inspect the code, implement against the plan, verify the result. Rename meta.name, then replace every <placeholder>.",
+    "whenToUse": "A change that should be planned from real code, applied, and independently checked"
+  },
+  "begin": {
+    "args": { "task": "string (required) — <the change to make>", "targetPath": "string — <where in the repo, default src/>" }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      {
+        "kind": "agent",
+        "does": "inspect the code under {targetPath} and produce a concrete plan for {task}: files to touch, approach, risks",
+        "produces": "plan"
+      },
+      {
+        "kind": "agent",
+        "does": "implement {plan} exactly; note anything that had to deviate",
+        "produces": "changes",
+        "isolationHint": true
+      },
+      {
+        "kind": "agent",
+        "does": "verify {changes} against {plan}: <run the tests / exercise the affected flow>; report pass/fail with evidence",
+        "produces": "verdict"
+      }
+    ]
+  },
+  "end": {
+    "review": "<e.g. verdict is pass with test output attached; deviations from plan are listed and acceptable>"
+  }
+}
