@@ -51,6 +51,9 @@ npx skills add Sarps/threadforge
 
 # or globally, for every project
 npx skills add Sarps/threadforge -g
+
+# update to the latest version
+npx skills update threadforge -g
 ```
 
 Works with Claude Code and [60+ other agents](https://github.com/vercel-labs/skills#supported-agents)
