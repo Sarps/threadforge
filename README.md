@@ -5,26 +5,43 @@
 **Draw the topology of engineering work as a thread. Let your agent write the workflow code.**
 
 ThreadForge is an [agent skill](https://agentskills.io) that turns a prose request like *"verify
-every story on my Jira board against its acceptance criteria"* into:
+every story on my Jira board against its acceptance criteria"* into a
+**[thread](https://claudefa.st/blog/guide/mechanics/thread-based-engineering)** and a
+**[dynamic workflow](https://code.claude.com/docs/en/workflows)**
 
-1. a **thread** — a small, validated JSON tree capturing the *topology of intent*: what happens in
-   sequence, what fans out over what, what loops until when, and where you (the human) begin and end
-2. a **Mermaid diagram** — generated from the thread, so you review a picture, never JavaScript
-3. a **runnable Claude dynamic-workflow script** — generated from the approved thread
+## Where this comes from
 
-You own strategy (topology, handoffs, review criteria). The agent owns mechanism (primitives,
-prompts, schemas). The thread is the contract between the two — and the only artifact you maintain.
+1. **[Thread-Based Engineering](https://claudefa.st/blog/guide/mechanics/thread-based-engineering)**
+is the source model. A thread is *"a unit of engineering work over time, driven by you and your
+agent"* — with two mandatory human touchpoints: you begin it (prompt or plan) and you end it (review
+or validate). Everything between is agent work.
 
-```text
-"make me a workflow that ..."
-    ↓  interview: the skill asks until topology, handoffs, and stop conditions are pinned
-threads/<name>.thread.json          ← source of truth, git-versioned
-    ↓  validate (deterministic; errors block codegen)
-    ↓  render   (deterministic; Mermaid)
-threads/<name>.md                   ← you approve THIS diagram
-    ↓  codegen per the shipped contract
-.claude/workflows/<name>.js         ← regenerable artifact; runs in Claude Code
-```
+<p align="center">
+  <a href="https://claudefa.st/blog/guide/mechanics/thread-based-engineering">
+    <img src="assets/thread-based-engineering.png" alt="The six thread types: Base, P-Threads, C-Threads, F-Threads, B-Threads, L-Threads" width="720">
+  </a>
+  <br><sub>The six thread types — diagram from the <a href="https://claudefa.st/blog/guide/mechanics/thread-based-engineering">Thread-Based Engineering guide</a></sub>
+</p>
+
+2. **[Dynamic Workflows](https://claudefa.st/blog/guide/development/dynamic-workflows)** is the target
+layer. Workflows are *"the orchestration layer for everything multi-agent,"* sitting **beneath** the
+thread model — which is exactly the boundary ThreadForge builds on: you author at the thread layer
+(strategy), the skill generates the orchestration layer beneath it (mechanism). You never hand-write
+`pipeline()` vs `parallel()` again, and when the runtime grows new primitives, your threads don't
+change — you regenerate.
+
+<p align="center">
+  <a href="https://claudefa.st/blog/guide/development/dynamic-workflows">
+    <img src="assets/workflow-patterns.png" alt="Six workflow patterns: Classify-And-Act, Fanout-And-Synthesize, Adversarial Verification, Generate-And-Filter, Tournament, Loop Until Done" width="720">
+  </a>
+  <br><sub>The six workflow patterns — diagram from the <a href="https://claudefa.st/blog/guide/development/dynamic-workflows">Dynamic Workflows guide</a>; ThreadForge ships each as a <a href="docs/templates/">ready-to-edit template</a></sub>
+</p>
+
+Workflows are *"powerful and expensive"* — *"wasteful for a two-line bug fix,"* and most traditional coding tasks don't need a
+panel of five reviewers. Read [when *not* to use a workflow](https://claudefa.st/blog/guide/development/dynamic-workflows#when-not-to-use-a-workflow)
+before drawing your first thread: if a single agent can hold the whole task in one context window,
+you don't need a thread — just ask your agent. ThreadForge is for the work that's *"too big, too
+parallel, or too prone to self-grading for one context window to handle."*
 
 ## Install
 
@@ -84,7 +101,6 @@ skills/threadforge/
 ```
 
 Rendered diagrams for every template: [docs/templates/](docs/templates/).
-Full design rationale: [docs/spec.md](docs/spec.md).
 
 ## License
 
