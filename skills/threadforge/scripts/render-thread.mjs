@@ -30,11 +30,16 @@ const id = () => `n${++n}`
 const lines = []
 const emit = (depth, s) => lines.push('  '.repeat(depth + 1) + s)
 
-const esc = (s) => String(s).replace(/"/g, '#quot;').replace(/[\r\n]+/g, ' ').trim()
-const clip = (s, max = 64) => {
-  const t = esc(s)
+const squash = (s) => String(s).replace(/[\r\n]+/g, ' ').trim()
+const clipRaw = (s, max = 64) => {
+  const t = squash(s)
   return t.length > max ? t.slice(0, max - 1) + '…' : t
 }
+// Mermaid label escaping (mermaid entity syntax); our own <br/>/<b> markup is added after escaping.
+const esc = (s) => squash(s).replace(/"/g, '#quot;').replace(/</g, '#lt;').replace(/>/g, '#gt;')
+const clip = (s, max = 64) => esc(clipRaw(s, max))
+// Markdown-context escaping for the --doc sections.
+const md = (s) => squash(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
 // Render an activity. Returns { entry, exits } — node ids to attach incoming and
 // outgoing edges to. Subgraph containers are linked by their subgraph id.
@@ -131,7 +136,7 @@ if (!asDoc) {
 const handoffs = []
 ;(function collect(node, path) {
   if (!node || typeof node !== 'object') return
-  if (node.produces) handoffs.push({ name: node.produces, from: node.kind === 'call' ? `call ${node.workflowName}` : clip(node.does ?? node.kind, 48) })
+  if (node.produces) handoffs.push({ name: node.produces, from: node.kind === 'call' ? `call ${node.workflowName}` : md(clipRaw(node.does ?? node.kind, 48)) })
   const kids = node.kind === 'sequence' ? node.steps
     : node.kind === 'parallel' ? node.branches
     : (node.kind === 'fanout' || node.kind === 'loop') ? [node.body]
@@ -142,7 +147,7 @@ const handoffs = []
 const doc = [
   `# Thread: ${thread.meta?.name ?? '(unnamed)'}`,
   '',
-  `> ${thread.meta?.description ?? ''}`,
+  `> ${md(thread.meta?.description ?? '')}`,
   '',
   '**This document is generated from the thread JSON — edit the thread, then re-render. Do not edit by hand.**',
   '',
@@ -158,8 +163,8 @@ const doc = [
   '',
   '## Human nodes',
   '',
-  `- **begin:** args \`${JSON.stringify(thread.begin?.args ?? {})}\`${thread.begin?.intent ? ` — ${thread.begin.intent}` : ''}`,
-  `- **end (review):** ${thread.end?.review ?? '?'}`,
+  `- **begin:** args \`${JSON.stringify(thread.begin?.args ?? {})}\`${thread.begin?.intent ? ` — ${md(thread.begin.intent)}` : ''}`,
+  `- **end (review):** ${md(thread.end?.review ?? '?')}`,
   '',
   `Workflow artifact: \`.claude/workflows/${thread.meta?.name ?? '<name>'}.js\``,
   '',

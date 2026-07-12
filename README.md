@@ -81,6 +81,7 @@ skills/threadforge/
   templates/                      10 starting shapes: C/P/B/F thread types + six workflow patterns
 ```
 
+Rendered diagrams for every template: [docs/templates/](docs/templates/).
 Full design rationale: [docs/spec.md](docs/spec.md).
 
 ## License
