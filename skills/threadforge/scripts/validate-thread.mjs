@@ -9,10 +9,10 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
-const KINDS = ['agent', 'sequence', 'parallel', 'fanout', 'loop', 'call']
+const KINDS = ['agent', 'transform', 'sequence', 'parallel', 'fanout', 'loop', 'call']
 const NAME_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
 const IDENT_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/
-const REF_RE = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g
+const REF_RE = /\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}/g
 const LISTY_RE = /(s|list|items|set|batch|results|findings|matches)$/i
 
 const errors = []
@@ -47,6 +47,10 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const isStr = (v) => typeof v === 'string'
 const nonEmpty = (v) => isStr(v) && v.trim().length > 0
 
+const CONSTANTS = isObj(thread?.begin?.constants) ? thread.begin.constants : {}
+const referenced = new Set()          // head of every {name} / {name.field} / over seen anywhere
+const transformProduces = new Map()   // produces name -> path, for the dead-transform check
+
 function checkTop(t) {
   if (!isObj(t)) return err('$', 'thread must be a JSON object')
   if (t.schemaVersion !== '1') err('$.schemaVersion', `expected "1", got ${JSON.stringify(t.schemaVersion)}`)
@@ -56,15 +60,32 @@ function checkTop(t) {
     if (!nonEmpty(t.meta.name)) err('$.meta.name', 'name is required')
     else if (!NAME_RE.test(t.meta.name)) err('$.meta.name', `"${t.meta.name}" is not kebab-case`)
     if (!nonEmpty(t.meta.description)) err('$.meta.description', 'description is required')
+    if (t.meta.phases !== undefined) {
+      if (!Array.isArray(t.meta.phases) || t.meta.phases.length === 0) {
+        err('$.meta.phases', 'phases must be a non-empty array of { title, detail? } — omit it to let codegen pick phases')
+      } else t.meta.phases.forEach((p, i) => {
+        if (!isObj(p) || !nonEmpty(p.title)) err(`$.meta.phases[${i}]`, 'each phase needs a non-empty title')
+        else if (p.detail !== undefined && !nonEmpty(p.detail)) err(`$.meta.phases[${i}].detail`, 'detail, when present, must be a non-empty string')
+      })
+    }
   }
 
   if (t.begin !== undefined) {
     if (!isObj(t.begin)) err('$.begin', 'begin must be an object')
-    else if (t.begin.args !== undefined) {
-      if (!isObj(t.begin.args)) err('$.begin.args', 'args must be an object of name -> type sketch')
-      else for (const [k, v] of Object.entries(t.begin.args)) {
-        if (!IDENT_RE.test(k)) err(`$.begin.args.${k}`, `arg name "${k}" is not a valid identifier`)
-        if (!nonEmpty(v)) err(`$.begin.args.${k}`, 'arg sketch must be a non-empty string')
+    else {
+      if (t.begin.args !== undefined) {
+        if (!isObj(t.begin.args)) err('$.begin.args', 'args must be an object of name -> type sketch')
+        else for (const [k, v] of Object.entries(t.begin.args)) {
+          if (!IDENT_RE.test(k)) err(`$.begin.args.${k}`, `arg name "${k}" is not a valid identifier`)
+          if (!nonEmpty(v)) err(`$.begin.args.${k}`, 'arg sketch must be a non-empty string')
+        }
+      }
+      if (t.begin.constants !== undefined) {
+        if (!isObj(t.begin.constants)) err('$.begin.constants', 'constants must be an object of name -> JSON value')
+        else for (const k of Object.keys(t.begin.constants)) {
+          if (!IDENT_RE.test(k)) err(`$.begin.constants.${k}`, `constant name "${k}" is not a valid identifier`)
+          if (isObj(t.begin.args) && k in t.begin.args) warn(`$.begin.constants.${k}`, `"${k}" is both an arg and a constant — references are ambiguous; rename one`)
+        }
       }
     }
   } else {
@@ -104,10 +125,14 @@ function refsIn(text) {
   return out
 }
 
+// A reference may be a bare name {stories} or a dotted path into a handoff {scout.sections};
+// only the head must resolve in scope — the fields are the codegen agent's schema inference (C4).
 function checkRefs(text, scope, path, field) {
   for (const name of refsIn(text)) {
-    if (!scope.has(name)) {
-      err(`${path}.${field}`, `references {${name}} but nothing in scope produces it (in scope: ${[...scope].join(', ') || 'nothing'})`)
+    const head = name.split('.')[0]
+    referenced.add(head)
+    if (!scope.has(head)) {
+      err(`${path}.${field}`, `references {${name}} but nothing in scope produces "${head}" (in scope: ${[...scope].join(', ') || 'nothing'})`)
     }
   }
 }
@@ -122,10 +147,29 @@ function walk(node, scope, path, depth) {
     err(`${path}.produces`, `"${node.produces}" is not a valid identifier`)
   }
 
+  if (node.when !== undefined) {
+    if (!nonEmpty(node.when)) err(`${path}.when`, '"when" must be a non-empty prose condition (it guards whether this activity runs)')
+    else checkRefs(node.when, scope, path, 'when')
+  }
+
   switch (node.kind) {
     case 'agent': {
       if (!nonEmpty(node.does)) err(`${path}.does`, 'agent needs a "does": the intent, in prose')
       else checkRefs(node.does, scope, path, 'does')
+      if (node.agentType !== undefined && !nonEmpty(node.agentType)) {
+        err(`${path}.agentType`, 'agentType must be a non-empty string (a custom subagent type) — omit it for the default')
+      }
+      if (node.rules !== undefined) {
+        if (!nonEmpty(node.rules)) err(`${path}.rules`, 'rules must be a non-empty string: standing orders woven verbatim into this agent\'s prompt — omit it when there are none')
+        else checkRefs(node.rules, scope, path, 'rules')
+      }
+      break
+    }
+    case 'transform': {
+      if (!nonEmpty(node.does)) err(`${path}.does`, 'transform needs a "does": the exact derivation in prose (grouping key, chunk size, fallback order) — it compiles to plain JavaScript, never an agent')
+      else checkRefs(node.does, scope, path, 'does')
+      if (!nonEmpty(node.produces)) err(`${path}.produces`, 'transform requires "produces": a derivation nothing consumes is dead weight — name the output or delete the node')
+      else if (IDENT_RE.test(String(node.produces))) transformProduces.set(node.produces, path)
       break
     }
     case 'sequence': {
@@ -155,11 +199,43 @@ function walk(node, scope, path, depth) {
       if (!['orchestrate', 'compare'].includes(node.mode)) {
         err(`${path}.mode`, `fanout mode must be "orchestrate" (per-item work over a list) or "compare" (N attempts at the same work), got ${JSON.stringify(node.mode)}`)
       }
-      if (!nonEmpty(node.over)) err(`${path}.over`, 'fanout needs "over": the handoff name it consumes')
-      else if (!scope.has(node.over)) {
-        err(`${path}.over`, `fans out over "${node.over}" but nothing in scope produces it (in scope: ${[...scope].join(', ') || 'nothing'})`)
-      } else if (node.mode === 'orchestrate' && !LISTY_RE.test(node.over)) {
-        warn(`${path}.over`, `orchestrate iterates a list, but "${node.over}" does not read as one — rename the upstream produces (e.g. "${node.over}List") or confirm it is a list`)
+      if (!nonEmpty(node.over)) err(`${path}.over`, 'fanout needs "over": the handoff name it consumes, optionally with a dotted field path (e.g. "scout.sections")')
+      else {
+        const segs = String(node.over).split('.')
+        const head = segs[0]
+        referenced.add(head)
+        if (segs.some((s) => !IDENT_RE.test(s))) {
+          err(`${path}.over`, `"${node.over}" is not a valid handoff reference — use a name or a dotted path of identifiers (e.g. "scout.sections")`)
+        } else if (!scope.has(head)) {
+          err(`${path}.over`, `fans out over "${node.over}" but nothing in scope produces "${head}" (in scope: ${[...scope].join(', ') || 'nothing'})`)
+        } else if (node.mode === 'orchestrate') {
+          if (head in CONSTANTS) {
+            let v = CONSTANTS[head]
+            let broken = null
+            for (const seg of segs.slice(1)) {
+              if (isObj(v) && seg in v) v = v[seg]
+              else { broken = seg; break }
+            }
+            if (broken !== null) {
+              err(`${path}.over`, `"${node.over}" — field "${broken}" does not exist in constant "${head}"`)
+            } else if (!Array.isArray(v)) {
+              err(`${path}.over`, `orchestrate iterates a list, but constant "${node.over}" is not an array — store the iteration target as an array (keep lookup maps as separate constants)`)
+            }
+          } else if (!LISTY_RE.test(segs[segs.length - 1])) {
+            warn(`${path}.over`, `orchestrate iterates a list, but "${node.over}" does not read as one — rename it (e.g. "${node.over}List") or confirm it is a list`)
+          }
+        }
+      }
+      if (node.ordering !== undefined && !['concurrent', 'sequential'].includes(node.ordering)) {
+        err(`${path}.ordering`, `ordering must be "concurrent" or "sequential", got ${JSON.stringify(node.ordering)}`)
+      }
+      if (node.ordering === 'sequential') {
+        if (node.mode === 'compare') warn(`${path}.ordering`, 'sequential ordering only applies to orchestrate — compare attempts are independent by definition')
+        if (!nonEmpty(node.orderingReason)) {
+          err(`${path}.orderingReason`, 'sequential fanout requires orderingReason: why must items run one at a time (shared mutable resource, serialized merges)? If you cannot answer, keep it concurrent')
+        }
+      } else if (nonEmpty(node.orderingReason)) {
+        warn(`${path}.orderingReason`, 'orderingReason given but ordering is not "sequential" — set ordering: "sequential" or drop the reason')
       }
       if (!nonEmpty(node.as) || !IDENT_RE.test(String(node.as))) {
         err(`${path}.as`, 'fanout needs "as": the per-item binding name used inside the body')
@@ -221,21 +297,29 @@ function walk(node, scope, path, depth) {
 
 function checkDuplicates(t) {
   if (!isObj(t.root)) return
-  const seen = new Map()
+  const seen = new Map() // produces name -> { path, guarded }
   const visit = (node, path) => {
     if (!isObj(node)) return
     if (nonEmpty(node.produces)) {
       if (seen.has(node.produces)) {
-        warn(`${path}.produces`, `"${node.produces}" is also produced at ${seen.get(node.produces)} — downstream references are ambiguous; rename one`)
-      } else seen.set(node.produces, path)
+        warn(`${path}.produces`, `"${node.produces}" is also produced at ${seen.get(node.produces).path} — downstream references are ambiguous; rename one`)
+      } else seen.set(node.produces, { path, guarded: nonEmpty(node.when) })
     }
     childrenOf(node).forEach((c, i) => visit(c, `${path}.<${node.kind}>[${i}]`))
   }
   visit(t.root, '$.root')
 
+  // A when-guarded producer named after an arg is the fallback idiom (compute the value
+  // only when the arg is absent) — that shadowing is intentional; warn only when unguarded.
   const argNames = Object.keys(t.begin?.args ?? {})
   for (const a of argNames) {
-    if (seen.has(a)) warn('$.begin.args', `arg "${a}" is shadowed by a produces of the same name at ${seen.get(a)}`)
+    const hit = seen.get(a)
+    if (hit && !hit.guarded) {
+      warn('$.begin.args', `arg "${a}" is shadowed by an unguarded produces of the same name at ${hit.path} — rename one, or add a "when" guard on the arg's absence to make it a fallback producer`)
+    }
+  }
+  for (const c of Object.keys(CONSTANTS)) {
+    if (seen.has(c)) warn('$.begin.constants', `constant "${c}" is shadowed by a produces of the same name at ${seen.get(c).path}`)
   }
 }
 
@@ -251,11 +335,18 @@ function checkCatalogCollision(t) {
 
 checkTop(thread)
 if (isObj(thread.root)) {
-  const rootScope = new Set(Object.keys(thread.begin?.args ?? {}))
+  const rootScope = new Set([...Object.keys(thread.begin?.args ?? {}), ...Object.keys(CONSTANTS)])
   walk(thread.root, rootScope, '$.root', 0)
 }
 checkDuplicates(thread)
 checkCatalogCollision(thread)
+
+for (const c of Object.keys(CONSTANTS)) {
+  if (!referenced.has(c)) warn('$.begin.constants', `constant "${c}" is never referenced ({${c}} or fanout over) — reference it or drop it`)
+}
+for (const [name, p] of transformProduces) {
+  if (!referenced.has(name)) warn(p, `transform produces "${name}" but nothing references it — consume it downstream or delete the transform`)
+}
 
 if (asJson) {
   console.log(JSON.stringify({ valid: errors.length === 0, errors, warnings }, null, 2))

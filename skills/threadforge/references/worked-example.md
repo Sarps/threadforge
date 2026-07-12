@@ -239,3 +239,107 @@ return {
   byEpic: groups,
 }
 ```
+
+## Appendix: transforms, dotted handoffs, and the arg fallback
+
+Three constructs added for real-world data plumbing. Thread fragments:
+
+```json
+{ "kind": "agent", "does": "enumerate the canvas: name, slug, flow sections with screens", "produces": "scout" },
+{ "kind": "fanout", "mode": "orchestrate", "over": "scout.sections", "as": "section",
+  "body": { "kind": "agent", "does": "audit {section} of canvas {scout.canvasName}", "produces": "audits" } },
+
+{ "kind": "transform", "does": "group {stories} by epic and chunk each group to at most {maxPerAgent} per batch", "produces": "batches" },
+
+{ "kind": "agent", "does": "re-load the flow plan from the gap report on disk", "produces": "flows",
+  "when": "only when the {flows} arg is absent" }
+```
+
+Compiled fragments:
+
+```js
+// dotted over → iterate the field; dotted refs interpolate fields, and the scout schema
+// carries canvasName + slug + sections because they are referenced downstream (C4)
+const audits = (await pipeline(scout.sections, section => agent(/* … */))).filter(Boolean)
+
+// transform → plain JS, implementing the does prose literally — never an agent (C3)
+const byEpic = new Map()
+for (const s of stories) {
+  const k = s.epicKey ?? 'NO-EPIC'
+  if (!byEpic.has(k)) byEpic.set(k, [])
+  byEpic.get(k).push(s)
+}
+const batches = []
+for (const [epic, group] of byEpic)
+  for (let i = 0; i < group.length; i += maxPerAgent) batches.push({ epic, stories: group.slice(i, i + maxPerAgent) })
+
+// when-guarded producer named after the optional arg → coalesce (C5 fallback idiom)
+let flows = Array.isArray(args?.flows) && args.flows.length ? args.flows : null
+if (!flows) flows = (await agent(/* re-load from the report */))?.flows ?? []
+```
+
+Note `audits`: it is produced *inside* the fanout body, so a later step referencing `{audits}`
+receives the collected array — the collection semantics of C4.
+
+## Appendix: the data-plane fields (constants, rules, when, ordering, agentType)
+
+A fragment showing how the five engineer-owned fields compile. Thread:
+
+```json
+{
+  "begin": {
+    "args": { "persona": "string (required)" },
+    "constants": {
+      "locales": ["fr", "pt", "yo"],
+      "orthography": { "fr": "use correct accents…", "pt": "European forms…", "yo": "tone marks required…" }
+    }
+  },
+  "root": {
+    "kind": "sequence",
+    "steps": [
+      { "kind": "agent", "does": "collect schema needs for {persona}", "produces": "schemaNeeds" },
+      { "kind": "agent", "does": "land all {schemaNeeds} as migrations", "produces": "foundation",
+        "when": "only when {schemaNeeds} is non-empty",
+        "agentType": "lead-engineer", "isolationHint": true,
+        "rules": "STANDING RULES: never ask the user; flag, never fabricate; scoped typechecks only." },
+      { "kind": "fanout", "mode": "orchestrate", "over": "locales", "as": "locale",
+        "ordering": "sequential", "orderingReason": "one shared glossary file is updated per locale",
+        "body": { "kind": "agent", "does": "translate the catalog into {locale} per {orthography}",
+          "rules": "STANDING RULES: never ask the user; flag, never fabricate; scoped typechecks only." } }
+    ]
+  }
+}
+```
+
+Generated fragments, each traceable to the contract:
+
+```js
+// C11: constants verbatim — never re-typed or summarized
+const LOCALES = ['fr', 'pt', 'yo']
+const ORTHOGRAPHY = { fr: 'use correct accents…', pt: 'European forms…', yo: 'tone marks required…' }
+
+// C12: rules verbatim — two agents carry byte-identical text, so it hoists into ONE const
+const RULES = `STANDING RULES: never ask the user; flag, never fabricate; scoped typechecks only.`
+
+// C3 when → plain if; skipped work surfaced, never silent
+let foundation = null
+if (needs.schemaNeeds.length) {
+  foundation = await agent(
+    `Land these schema needs as migrations…\n${needs.schemaNeeds.map(s => `- ${s}`).join('\n')}\n${RULES}`,
+    { label: 'foundation', agentType: 'lead-engineer' },   // agentType passes through
+  )
+} else {
+  log('no schema needs — foundation skipped')
+}
+
+// C3 sequential fanout → for...of, one item at a time: one shared glossary file is updated per locale
+const translated = []
+for (const locale of LOCALES) {
+  translated.push(await agent(
+    `Translate the catalog into ${locale}.\nORTHOGRAPHY: ${ORTHOGRAPHY[locale]}\n${RULES}`,  // C11: index the map, don't stringify it
+    { label: `translate:${locale}`, phase: 'Translate' },
+  ))
+}
+
+return { foundation, foundationSkipped: !needs.schemaNeeds.length, translated: translated.filter(Boolean).length }
+```

@@ -55,16 +55,42 @@ Copy it to `threads/<name>.thread.json` and rename `meta.name`. Say which templa
 what the user already said; for what's missing, ask targeted questions (batch them; use option lists
 where the choice is structural). **Never guess topology.** The non-negotiables:
 
-- **fanout** — what exact list does it iterate (`over` must be a named upstream handoff)? Per-item
-  work = orchestrate; N attempts at the same work = compare (and how many attempts?)
+- **fanout** — what exact list does it iterate (`over` must be a named upstream handoff — a field
+  of one is fine, e.g. `over: "scout.sections"` — or a `begin.constants` array)? Per-item work =
+  orchestrate; N attempts at the same work = compare (and how many attempts?). Items one at a time
+  instead of concurrently → `ordering: "sequential"` + `orderingReason` (shared mutable resource,
+  serialized merges); no defensible reason → concurrent
+- **transform** — deterministic derivations between steps (group, chunk, union/dedupe, derive a
+  slug/path, coalesce an arg with a computed fallback) are `transform` nodes with the exact rule in
+  `does` — never buried in an agent's prompt, never left for codegen to invent. A grouping key or
+  batch size is strategy: ask for it (group by what? max how many per batch?)
+- **constants** — curated data the workflow bakes in (story batches, frame/node-id tables, locale
+  maps) goes in `begin.constants`, never into runtime args or `does` prose. It is engineer-owned:
+  codegen copies it verbatim and regen round-trips it
+- **rules** — standing orders that must reach an agent's prompt word-for-word (hands-off policy,
+  stage boundaries, orthography requirements) go in that agent's `rules` field, verbatim; `does`
+  stays short intent that codegen may reword, `rules` never gets reworded. Workflow-scoped only: a
+  rule that holds for any work in the repo belongs in the target repo's CLAUDE.md, not in the
+  thread — push back when the engineer pastes repo conventions in. Identical text on several
+  agents is fine (codegen hoists it into one shared constant in the script)
+- **when** — a step that sometimes doesn't run (skip the phase when there's nothing to do, fall back
+  to re-reading a report when an arg is absent) gets a `when` guard naming its condition — never
+  bury conditionality in prose. And ask: what does the engineer see when it's skipped?
+- **agentType** — should a step run as a specific custom subagent (e.g. `senior-qa`,
+  `lead-engineer`)? That's strategy — pin it on the agent; leave it off for the default
 - **parallel** — why must a later step see ALL branch results at once? No defensible `barrierReason`
   → it's not a barrier; restructure as sequence or fanout and tell the user why
 - **loop** — when is it done (`stopCondition`)? When do we give up (`noProgressCondition`)? Cap
   rounds (`maxRounds`)?
 - **handoffs** — every output a later step consumes gets a `produces` name; downstream refers to it
-  as `{name}`. Names must resolve — no "the results from before"
+  as `{name}` or a field of it as `{name.field}`. Names must resolve — no "the results from
+  before". Referencing a fanout body's `produces` from outside the fanout means the collected
+  array of per-item outputs; a loop body's, the last round's value. An optional arg with a
+  when-guarded producer of the same name is the fallback idiom (arg if given, else computed)
 - **begin/end** — what args does the engineer supply? What exactly will they look at to call it done
   (`end.review`)? A thread without a concrete review is not done being drawn
+- **phases** — should the run display group work under stable titles across regens? Pin them in
+  `meta.phases` (title + optional detail); omit to let codegen choose each time
 - **reuse** — before adding an agent subtree, scan `.claude/workflows/*.js` metas and `threads/`; if
   an existing workflow covers a step, propose a `call` activity instead of redefining the work
 - **mid-run human decision** (approve-then-apply) — split into two threads with the human between
@@ -97,10 +123,17 @@ on regeneration.
 
 For a workflow that predates its thread: read the script, recover the topology (`pipeline` chains →
 `sequence` + `fanout·orchestrate`; `parallel` → `parallel` with the barrier reason from
-comments/structure, or a compare `fanout` if followed by a judge; bounded `while` → `loop`;
-`workflow()` → `call`), write the thread with `does` summarizing each agent prompt's intent, then
-validate and render as usual. Flag anything the script does that the thread model cannot express.
-Mark the thread's `whenToUse` with `(decompiled — review before trusting)`.
+comments/structure, or a compare `fanout` if followed by a judge; awaited `for...of` over a list →
+`fanout·orchestrate` with `ordering: "sequential"` + the reason from comments; bounded `while` →
+`loop`; `if` around a stage → `when`; plain-JS derivations between awaits — grouping, chunking,
+unions, slicing, slug/path building — → `transform` nodes with the derivation spelled exactly;
+`args.x ?? <computed>` fallbacks → a when-guarded producer named after the arg; `workflow()` →
+`call`), and recover the data plane (top-level `const` data tables → `begin.constants` verbatim;
+shared prompt-rule strings → the `rules` field of each agent whose prompt included them, verbatim;
+`opts.agentType` → the agent's `agentType`; the script's `meta.phases` → thread `meta.phases`
+verbatim), write the thread with `does` summarizing each agent
+prompt's intent, then validate and render as usual. Flag anything the script does that the thread
+model cannot express. Mark the thread's `whenToUse` with `(decompiled — review before trusting)`.
 
 ## Hard rules
 

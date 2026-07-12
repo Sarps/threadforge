@@ -19,7 +19,21 @@
           "description": "kebab-case; becomes the workflow filename <name>.js"
         },
         "description": { "type": "string", "minLength": 1 },
-        "whenToUse": { "type": "string" }
+        "whenToUse": { "type": "string" },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Optional: pins the generated script's phase grouping. Codegen copies titles (and details) verbatim into the script's meta.phases and phase() calls, so regen keeps them stable instead of inventing new ones. Omit to let codegen choose.",
+          "items": {
+            "type": "object",
+            "required": ["title"],
+            "additionalProperties": false,
+            "properties": {
+              "title": { "type": "string", "minLength": 1 },
+              "detail": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
       }
     },
     "begin": {
@@ -29,12 +43,17 @@
       "properties": {
         "args": {
           "type": "object",
-          "description": "Arg sketch: name -> rough type/requirement prose, e.g. { \"boardId\": \"string (required)\" }. Not a strict schema; guides the codegen agent's args reads.",
+          "description": "Arg sketch: name -> rough type/requirement prose, e.g. { \"boardId\": \"string (required)\" }. Not a strict schema; guides the codegen agent's args reads. An optional arg may be backed by a fallback: an activity producing the same name, guarded by a when on the arg's absence (see $defs/produces).",
           "additionalProperties": { "type": "string" }
         },
         "intent": {
           "type": "string",
           "description": "One-line statement of why this thread is being run."
+        },
+        "constants": {
+          "type": "object",
+          "description": "Design-time curated data the engineer bakes into the workflow: lists to fan out over, lookup maps, term tables. Keys enter scope like args (referenceable as {name}, usable as fanout.over when the value is an array). Values are arbitrary JSON and compile into the script verbatim.",
+          "additionalProperties": true
         }
       }
     },
@@ -54,9 +73,20 @@
     }
   },
   "$defs": {
+    "when": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional guard: a prose condition over in-scope names as {name} or {name.field} (e.g. \"only when {flows} has schema needs\", \"only when the {flows} arg is absent\"). The activity runs only when it holds; skipped work must still be visible in the workflow's return value."
+    },
+    "produces": {
+      "type": "string",
+      "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+      "description": "Names this activity's output for downstream reference as {name} (or a field of it as {name.field}). Collection semantics: declared inside a fanout body and referenced outside the fanout, the name resolves to the collected array of per-item outputs (failed/skipped items dropped); declared inside a loop body and referenced after the loop, it resolves to the last completed round's value. Fallback idiom: a produces named after an optional arg, guarded by a when on that arg's absence, makes downstream {name} mean 'the arg when given, else this output'."
+    },
     "activity": {
       "oneOf": [
         { "$ref": "#/$defs/agent" },
+        { "$ref": "#/$defs/transform" },
         { "$ref": "#/$defs/sequence" },
         { "$ref": "#/$defs/parallel" },
         { "$ref": "#/$defs/fanout" },
@@ -74,17 +104,39 @@
         "does": {
           "type": "string",
           "minLength": 1,
-          "description": "Intent in prose. May reference args, upstream produces names, or fanout bindings as {name}."
+          "description": "Intent in prose. May reference args, upstream produces names, or fanout bindings as {name}, or a field of one as {name.field}."
         },
-        "produces": {
-          "type": "string",
-          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
-          "description": "Names this activity's output so downstream activities can reference it."
-        },
+        "produces": { "$ref": "#/$defs/produces" },
         "isolationHint": {
           "type": "boolean",
           "description": "Engineer's hint that this agent mutates files; the codegen agent decides whether worktree isolation is warranted."
-        }
+        },
+        "agentType": {
+          "type": "string",
+          "description": "Custom subagent type to run this activity as (e.g. \"senior-qa\", \"lead-engineer\"); omit for the default workflow subagent."
+        },
+        "rules": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Standing orders woven VERBATIM into this agent's prompt; may reference in-scope names as {name}. Workflow-scoped rules only (hands-off policy, stage boundaries, orthography requirements) — repo-wide conventions belong in the target repo's CLAUDE.md, which agents already receive."
+        },
+        "when": { "$ref": "#/$defs/when" }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "description": "Deterministic data step between activities: group, chunk, union/dedupe, coalesce, derive names/paths. Compiles to plain JavaScript — never an agent, never LLM work. Use it whenever the derivation is strategy the engineer must pin (a grouping key, a batch size, a fallback order), instead of burying it in an agent's prompt or leaving codegen to invent it.",
+      "required": ["kind", "does", "produces"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "transform" },
+        "does": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The exact derivation in prose, e.g. \"group {stories} by epic and chunk each group to at most {maxPerAgent} per batch\". References in-scope names as {name} or {name.field}. Codegen implements it literally."
+        },
+        "produces": { "$ref": "#/$defs/produces" },
+        "when": { "$ref": "#/$defs/when" }
       }
     },
     "sequence": {
@@ -98,7 +150,8 @@
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/activity" }
-        }
+        },
+        "when": { "$ref": "#/$defs/when" }
       }
     },
     "parallel": {
@@ -117,7 +170,8 @@
           "type": "string",
           "minLength": 1,
           "description": "Why a later step needs ALL branch results at once."
-        }
+        },
+        "when": { "$ref": "#/$defs/when" }
       }
     },
     "fanout": {
@@ -130,7 +184,7 @@
         "mode": { "enum": ["orchestrate", "compare"] },
         "over": {
           "type": "string",
-          "description": "Handoff name. orchestrate: the list to iterate. compare: the single input every attempt receives."
+          "description": "Handoff name, optionally with a dotted field path into it (e.g. \"scout.sections\"). orchestrate: the list to iterate. compare: the single input every attempt receives."
         },
         "as": {
           "type": "string",
@@ -142,8 +196,23 @@
           "minimum": 2,
           "description": "compare mode only: how many independent attempts to fan out."
         },
-        "body": { "$ref": "#/$defs/activity" }
-      }
+        "ordering": {
+          "enum": ["concurrent", "sequential"],
+          "description": "orchestrate only. sequential = one item at a time, in list order; requires orderingReason. Default concurrent."
+        },
+        "orderingReason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why items must run one at a time (shared mutable resource, serialized merges, one local DB). Mandatory when ordering is sequential — no reason, no serialization."
+        },
+        "body": { "$ref": "#/$defs/activity" },
+        "when": { "$ref": "#/$defs/when" }
+      },
+      "if": {
+        "properties": { "ordering": { "const": "sequential" } },
+        "required": ["ordering"]
+      },
+      "then": { "required": ["orderingReason"] }
     },
     "loop": {
       "type": "object",
@@ -163,7 +232,8 @@
           "minLength": 1,
           "description": "When to give up (no forward progress)."
         },
-        "maxRounds": { "type": "integer", "minimum": 1 }
+        "maxRounds": { "type": "integer", "minimum": 1 },
+        "when": { "$ref": "#/$defs/when" }
       }
     },
     "call": {
@@ -180,14 +250,11 @@
         },
         "args": {
           "type": "object",
-          "description": "Arg mapping; values may reference in-scope names as {name}.",
+          "description": "Arg mapping; values may reference in-scope names as {name} or {name.field}.",
           "additionalProperties": { "type": "string" }
         },
-        "produces": {
-          "type": "string",
-          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
-          "description": "Names the called workflow's return value for downstream handoffs."
-        }
+        "produces": { "$ref": "#/$defs/produces" },
+        "when": { "$ref": "#/$defs/when" }
       }
     }
   }
